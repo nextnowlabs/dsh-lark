@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Executable entry for the `dsh-lark-channel` command. Kept apart from
- * {@link module:dsh-lark-channel/provision} so importing the logic — from a
+ * Executable entry for the `dsh-lark` command. Kept apart from
+ * {@link module:@nextnowlabs/dsh-lark/provision} so importing the logic — from a
  * test, or from another tool — never runs it.
- * @module dsh-lark-channel/cli
+ * @module @nextnowlabs/dsh-lark/cli
  */
 
 import { main } from './provision.ts'

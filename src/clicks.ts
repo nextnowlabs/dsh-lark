@@ -13,7 +13,7 @@
  * different event; the same press redelivered by the platform is still the
  * same one. Single-use cards — an approval, a question — need none: they are
  * published once per question and settle when answered.
- * @module dsh-lark-channel/clicks
+ * @module @nextnowlabs/dsh-lark/clicks
  */
 
 /** Marks issued this process, so two payloads built in the same millisecond differ. */

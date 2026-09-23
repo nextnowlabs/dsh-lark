@@ -123,12 +123,12 @@ describe('file approval card', () => {
       path: 'out.zip',
       workspace: 'w',
       bytes: 4096,
-      allow: { kind: 'dsh-lark-channel/approval', id: 'f1', decision: 'allow' },
-      reject: { kind: 'dsh-lark-channel/approval', id: 'f1', decision: 'reject' },
+      allow: { kind: 'dsh-lark/approval', id: 'f1', decision: 'allow' },
+      reject: { kind: 'dsh-lark/approval', id: 'f1', decision: 'reject' },
     }))
     expect(controls.map((control) => control.value)).toEqual([
-      { kind: 'dsh-lark-channel/approval', id: 'f1', decision: 'allow' },
-      { kind: 'dsh-lark-channel/approval', id: 'f1', decision: 'reject' },
+      { kind: 'dsh-lark/approval', id: 'f1', decision: 'allow' },
+      { kind: 'dsh-lark/approval', id: 'f1', decision: 'reject' },
     ])
     expect(controls.map((control) => control.label)).toEqual(['允许发送', '拒绝'])
   })

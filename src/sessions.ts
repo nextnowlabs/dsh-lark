@@ -23,7 +23,7 @@
  * - **A pick is undone by picking.** This conversation's own derived session is
  *   always a row, so going back is the same gesture as going away — no second
  *   verb, nothing to remember.
- * @module dsh-lark-channel/sessions
+ * @module @nextnowlabs/dsh-lark/sessions
  */
 
 import type { HostEventRecord, HostSessionQuery, HostSessionRecord } from './host.ts'
@@ -33,7 +33,7 @@ import type { ConversationSubject } from './session.ts'
 export const SESSIONS_COMMAND = 'sessions'
 
 /** Marks this plugin's session rows apart from other card actions. */
-export const SESSIONS_ACTION = 'dsh-lark-channel/sessions'
+export const SESSIONS_ACTION = 'dsh-lark/sessions'
 
 /** How many rows the picker offers before it asks for a keyword instead. */
 export const PICKER_ROWS = 8
@@ -206,7 +206,7 @@ export function sessionActionValue(value: unknown): SessionActionValue | undefin
 export interface ChatSessionPicksOptions {
   /** Persisted conversation-key → session id; an empty entry means derived. */
   readonly entries?: Record<string, string> | undefined
-  /** Deep-merge one patch into the plugin's settings section; false = not composed. */
+  /** Merge one patch into this channel's durable store; false = not durable. */
   readonly persist?: ((patch: { chatSessions: Record<string, string> }) => Promise<boolean>) | undefined
   /** Operator console line. */
   readonly report?: ((line: string) => void) | undefined
@@ -274,7 +274,7 @@ export class ChatSessionPicks {
     })
     if (!durable && !this.warnedNotDurable) {
       this.warnedNotDurable = true
-      this.report('lark-channel: session picks are in-memory only (no settings service); they reset on restart')
+      this.report('lark-channel: session picks are in-memory only (no durable storage); they reset on restart')
     }
     return { changed, durable }
   }

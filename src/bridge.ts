@@ -2,7 +2,7 @@
  * The chat↔agent bridge: inbound Lark messages drive per-chat DSH agents,
  * committed assistant output returns as chat messages, and host approval
  * questions become interactive cards answered by button clicks.
- * @module dsh-lark-channel/bridge
+ * @module @nextnowlabs/dsh-lark/bridge
  */
 
 import { randomUUID } from 'node:crypto'
@@ -29,6 +29,7 @@ import {
   TOAST,
 } from './cards.ts'
 import type { ResolvedConfig } from './config.ts'
+import type { StatePatch } from './state.ts'
 import type {
   HostAgent,
   HostAgentHandle,
@@ -36,6 +37,7 @@ import type {
   HostAgentPresets,
   HostAttachments,
   HostAgentRegistry,
+  HostAgentSetup,
   HostApprovalOutcome,
   HostApprovalRequest,
   HostDefaultModel,
@@ -53,7 +55,14 @@ import type {
   HostWorkspace,
   HostWorkspaceRegistry,
 } from './host.ts'
-import { isStepStartEvent, isToolCallEvent, isTurnEndEvent, isTurnStartEvent, isUserMessageEvent } from './host.ts'
+import {
+  assistantStreamChunk,
+  isStepStartEvent,
+  isToolCallEvent,
+  isTurnEndEvent,
+  isTurnStartEvent,
+  isUserMessageEvent,
+} from './host.ts'
 import { createCotRenderer } from './cot.ts'
 import type { CotPort } from './cot.ts'
 import { createMessageRenderer, createStreamRenderer, replyOptions } from './outbound.ts'
@@ -198,7 +207,7 @@ interface AgentComposition {
   /** Names what each call of this session's tools does, and its category. */
   readonly presentCall: ToolPresentation
   /** Creation-time composition: the preset join plus this channel's own rows. */
-  readonly setup: (agentCtx: Context) => Promise<void>
+  readonly setup: HostAgentSetup
 }
 
 /**
@@ -223,7 +232,7 @@ interface DurableAgentRegistry extends HostAgentRegistry {
   resume(options: {
     readonly resumeSessionId: string
     readonly agentOptions?: HostAgentOptions
-    readonly setup?: (agentCtx: Context) => Promise<void>
+    readonly setup?: HostAgentSetup
   }): Promise<HostAgentHandle>
 }
 
@@ -309,7 +318,7 @@ interface PendingApproval {
 }
 
 /** Marker distinguishing this plugin's approval buttons from other card actions. */
-const APPROVAL_ACTION = 'dsh-lark-channel/approval'
+const APPROVAL_ACTION = 'dsh-lark/approval'
 
 /** Card-button payload carried by an approval decision. */
 interface ApprovalActionValue {
@@ -526,10 +535,14 @@ function activityLabel(title: string): string {
  * so a chat line says what a call does rather than repeating its name — then
  * the model's `description` argument, then the bare name.
  * @param tools - the host tool registry, when composed.
- * @param scope - the viewing scope key holding this agent's tools.
+ * @param agentOf - the live agent whose scope the definition is read in, or
+ * undefined while this session has no agent yet. The host's own presenters
+ * read through the calling agent for the same reason: an agent's scope is
+ * parented to its preset's standing scope, so it is the widest view a call
+ * can be described from.
  * @returns a describer safe to call on every `tool/call` event.
  */
-function createCallPresenter(tools: HostTools | undefined, scope: unknown): ToolPresentation {
+function createCallPresenter(tools: HostTools | undefined, agentOf: () => HostAgent | undefined): ToolPresentation {
   return (name, argumentsJson) => {
     let args: unknown
     try {
@@ -540,7 +553,7 @@ function createCallPresenter(tools: HostTools | undefined, scope: unknown): Tool
       return { title: name }
     }
     try {
-      const view = tools?.get(name, scope)?.presentCall?.(args)
+      const view = tools?.get(name, agentOf())?.presentCall?.(args)
       const title = view?.title
       if (typeof title === 'string' && title.trim() !== '') {
         return {
@@ -722,7 +735,7 @@ export function installBridge(
   port: ChannelPort,
   notify: (line: string) => void,
   authorization: Authorization,
-  persistState: (patch: object) => Promise<boolean> = async () => false,
+  persistState: (patch: StatePatch) => Promise<boolean> = async () => false,
   liveness?: {
     readonly deadlineMs?: number
     readonly backoffMs?: readonly number[]
@@ -1049,24 +1062,35 @@ export function installBridge(
    * record it, and the join happens inside setup so a broken preset rolls the
    * whole creation back instead of publishing a toolless session.
    * @returns the composition every rung of one session's ladder applies.
-   * @throws when the roster supplies no such preset.
+   * @throws when the roster supplies no such preset, or resolved one that
+   * could not be composed.
    */
   const composeAgent = async (): Promise<AgentComposition> => {
     // Loader siblings mount concurrently; await the complete application so a
     // first message arriving during boot never sees a half-composed agent world.
     await (ctx.get('loader') as HostLoader | undefined)?.await()
     const presets = ctx.get('agentPresets') as HostAgentPresets | undefined
-    const presetId = presets === undefined ? undefined : (await presets.resolve(config.preset)).id
-    // A roster keeps every tool off the global layer, so its standing key is
-    // the view that can describe this agent's calls.
-    const toolScope = presets === undefined || presetId === undefined
-      ? undefined
-      : await presets.standingKeyFor(presetId)
+    const preset = presets === undefined ? undefined : await presets.resolve(config.preset)
+    // Resolving a preset now SUCCEEDS for one that failed to compose and
+    // carries the failure as metadata, so a broken roster would otherwise
+    // reach the chat as an opaque refusal from `mount` a rung later, naming
+    // nothing. Refused here instead, in the roster's own words.
+    if (preset?.broken !== undefined) {
+      throw new Error(`agent preset "${preset.id}" could not be composed: ${preset.broken}`)
+    }
+    // The scope a call is described in is THE AGENT — what the host's own
+    // presenters pass, and a superset of the roster's standing scope, which is
+    // only the agent scope's parent. No agent exists when a composition is
+    // resolved, so the one the host hands to `setup` is kept here and the
+    // presenter reads it per call. Until then it describes calls through the
+    // global layer, which is what it did before a roster was composed at all.
+    let composed: HostAgent | undefined
     return {
-      ...presetId === undefined ? {} : { presetId },
-      presentCall: createCallPresenter(ctx.get('tools') as HostTools | undefined, toolScope),
-      setup: async (agentCtx: Context) => {
-        if (presets !== undefined && presetId !== undefined) await presets.mount(agentCtx, presetId)
+      ...preset === undefined ? {} : { presetId: preset.id },
+      presentCall: createCallPresenter(ctx.get('tools') as HostTools | undefined, () => composed),
+      setup: async (agentCtx: Context, agent: HostAgent) => {
+        composed = agent
+        if (presets !== undefined && preset !== undefined) await presets.mount(agentCtx, preset.id)
         composeChatAgent(agentCtx, config, askQuestions, planReview, sendFilePorts, botSelf())
       },
     }
@@ -2863,6 +2887,62 @@ export function installBridge(
     if (claimed === undefined) return
     targetByMessageId.delete(id)
     aimAt(sessionId, binding, claimed)
+  })
+
+  /**
+   * The turn each in-flight attempt belongs to.
+   *
+   * A live `chunk` frame names its attempt and not its turn — the turn rides
+   * the `start` frame that opened it — so this is what pairs a delta with the
+   * card it is typing into. Keyed by session first because an attempt id is
+   * only unique within the agent that minted it.
+   */
+  const turnByAttempt = new Map<string, Map<string, number>>()
+
+  /**
+   * The model's live output, on its way to the chat.
+   *
+   * This is where a typewriter answer and a reasoning stream come from now.
+   * They used to ride an `assistant/chunk` SESSION event, which dsh 0.1.7
+   * removed — the log keeps the assembled message instead, and the deltas that
+   * produced it are published here, process-locally, as they arrive. A
+   * deployment that never sees them loses only the incremental rendering: the
+   * committed `assistant/message` still carries the whole answer.
+   *
+   * Frames are normalized onto the shape both renderers already read, so the
+   * change of transport stays at this boundary.
+   */
+  ctx.on('agent/assistant-stream', payload => {
+    const sessionId = payload.agent.session.id
+    const binding = bySession.get(sessionId)
+    const { frame } = payload
+    let turns = turnByAttempt.get(sessionId)
+    if (frame.type === 'start') {
+      if (turns === undefined) {
+        turns = new Map()
+        turnByAttempt.set(sessionId, turns)
+      }
+      turns.set(frame.attemptId, frame.turn)
+      return
+    }
+    if (frame.type === 'end') {
+      turns?.delete(frame.attemptId)
+      if (turns?.size === 0) turnByAttempt.delete(sessionId)
+      return
+    }
+    if (binding === undefined) return
+    // A chunk whose start frame predates this bridge has no turn to type into;
+    // guessing one would put the model's words under someone else's question.
+    const turn = turns?.get(frame.attemptId)
+    if (turn === undefined) return
+    const normalized = assistantStreamChunk(frame, turn)
+    if (normalized === undefined) return
+    try {
+      binding.renderer.handle(normalized)
+    } catch (error) {
+      notify(`lark-channel: rendering a stream chunk of ${sessionId} failed: ${failureDetail(error)}`)
+      ctx.logger.warn('rendering an assistant stream chunk failed: %s', error)
+    }
   })
 
   // Outbound: the owned chat's renderer decides what reaches the chat. The

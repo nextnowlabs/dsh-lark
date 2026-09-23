@@ -1,6 +1,6 @@
 # dsh-lark · DeepSeek Harness plugin for Feishu / Lark
 
-[![npm](https://img.shields.io/npm/v/dsh-lark-channel)](https://www.npmjs.com/package/dsh-lark-channel) [![CI](https://github.com/omdsh-dev/dsh-lark/actions/workflows/ci.yml/badge.svg)](https://github.com/omdsh-dev/dsh-lark/actions/workflows/ci.yml) [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+[![npm](https://img.shields.io/npm/v/@nextnowlabs/dsh-lark)](https://www.npmjs.com/package/@nextnowlabs/dsh-lark) [![CI](https://github.com/nextnowlabs/dsh-lark/actions/workflows/ci.yml/badge.svg)](https://github.com/nextnowlabs/dsh-lark/actions/workflows/ci.yml) [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
 English | [简体中文](README.md)
 
@@ -11,8 +11,8 @@ Hand your agent work from the chat, watch it run, switch workspace and model as 
 ## Quickstart
 
 ```sh
-npm i -g dsh-lark-channel
-dsh-lark-channel start
+npm i -g @nextnowlabs/dsh-lark
+dsh-lark start
 ```
 
 A QR code appears in the terminal. Scan it in Feishu to create the app, then DM the bot or @-mention it in a group.
@@ -22,7 +22,7 @@ Before the first dependency install, the command writes the profile's pnpm build
 Prefer to install nothing? Run it through npx instead — every later command then carries the same prefix:
 
 ```sh
-npx dsh-lark-channel@latest start
+npx @nextnowlabs/dsh-lark@latest start
 ```
 
 If DeepSeek Harness itself is not installed yet:
@@ -101,21 +101,21 @@ The work shows up in Feishu as it happens, and anything needing you arrives as a
 On macOS and systemd Linux the bot runs as a user service, so closing the terminal leaves it up:
 
 ```sh
-dsh-lark-channel status
-dsh-lark-channel logs -f
-dsh-lark-channel restart
-dsh-lark-channel stop
+dsh-lark status
+dsh-lark logs -f
+dsh-lark restart
+dsh-lark stop
 ```
 
-Started through npx, those same commands carry the `npx dsh-lark-channel@latest` prefix — the tool prints whichever form you are using, so what you read is what you can paste.
+Started through npx, those same commands carry the `npx @nextnowlabs/dsh-lark@latest` prefix — the tool prints whichever form you are using, so what you read is what you can paste.
 
 To upgrade:
 
 ```sh
-dsh-lark-channel upgrade
+dsh-lark upgrade
 ```
 
-That installs the newest CLI and restarts the bot on it. Through npx there is nothing to upgrade — `npx dsh-lark-channel@latest start` already runs the newest — and either way `start` and `status` mention a newer release when one exists.
+That installs the newest CLI and restarts the bot on it. Through npx there is nothing to upgrade — `npx @nextnowlabs/dsh-lark@latest start` already runs the newest — and either way `start` and `status` mention a newer release when one exists.
 
 When the connection drops, the channel rebuilds its WebSocket under a quota and a backoff, so a live process is never a silently dead bot.
 
@@ -124,7 +124,7 @@ When the connection drops, the channel rebuilds its WebSocket under a quota and 
 Give a second Feishu app its own agent:
 
 ```sh
-dsh-lark-channel add reviewer
+dsh-lark add reviewer
 ```
 
 It writes the new row, restarts, and shows that bot's QR code. Once scanned it has its own settings, app secret, and sessions — nothing shared with the first.
@@ -132,7 +132,7 @@ It writes the new row, restarts, and shows that bot's QR code. Once scanned it h
 Put both in one group and they hand the turn over by mentioning each other: one finishes a change and @s the reviewer, who can @ back for another pass. Six consecutive bot turns by default, and anyone speaking refills that. To take one out:
 
 ```sh
-dsh-lark-channel remove reviewer
+dsh-lark remove reviewer
 ```
 
 Its credential and settings stay, so adding the same name back reaches the same bot.
@@ -140,7 +140,7 @@ Its credential and settings stay, so adding the same name back reaches the same 
 To run Feishu inside the profile `dsh web` already uses:
 
 ```sh
-dsh plugin --profile web add dsh-lark-channel@latest
+dsh plugin --profile web add @nextnowlabs/dsh-lark@latest
 dsh web
 ```
 
@@ -153,7 +153,7 @@ dsh web
 - `instance` names an extra bot row; the first stays unnamed, which keeps its settings and sessions exactly where they are.
 - `botPeers` restricts which bots are answered; `botHops` bounds consecutive bot turns (six).
 - A card that changes state is bound to the chat it was sent to: forwarded elsewhere, it governs nothing.
-- Where the deployment composes a credentials service, the scanned app secret is stored there; one written into settings by an older version moves on the next boot.
+- The scanned app secret goes to the host's credentials service and the app id into this channel's own state domain — one JSON document per instance under `$DSH_HOME/storages/`, mode 0600. A secret an older version wrote into `settings.yaml` moves on the next boot, and the per-conversation state in that document is read back as a seed once the host has renamed it, so nothing is lost.
 - Image input is off by default: turn on `attachImages` only for a model you know accepts images.
 - `receiveFiles` is on by default: inbound files land under `.dsh-lark/inbox/<timestamp>-<message hash>/` in the conversation's workspace and are never cleaned up automatically — that's on you. The first file into a workspace prompts a suggestion to add `.dsh-lark/` to `.gitignore`, but the channel never edits that file itself.
 - `sendFiles` is on by default too: a direct message sends straight through, a group shows an approval card on every send — carrying where the file sits inside the workspace, the workspace's own name, and the size, rather than an absolute host path everyone in the room would read. There is no setting to turn that group approval off, since it would be an official back door for a prompt-injection exfiltration chain.
@@ -162,14 +162,15 @@ dsh web
 - Settled approval cards record who decided: when the callback omits a name, the channel best-effort resolves it from the current chat roster. Missing roster permission, lookup failures, or departed members safely show the open id instead and never block approval or file delivery.
 - The single-file ceiling defaults to 20 MiB, set separately for each direction with `maxReceiveFileBytes` and `maxSendFileBytes`; documents (pdf / xlsx / docx) only ever arrive as a download with no online preview, because the upstream SDK uploads every general file as the `stream` type instead of inferring one from the extension.
 - Voice messages land on disk like any other file; nothing transcribes them.
-- Configuration is read at startup; changing it needs a restart.
+- Configuration IS the `config` of this plugin's row in the profile patch (`~/.dsh/profiles/<profile>/cordis.patch.yml`), which is also what Settings → Plugins edits; the host hot-reloads the row, so no manual restart is needed.
+- A conversation's own state (the `/cd` workspace, the `/model` route, the `/new` epoch, the `/session` pick) is not configuration: it lives in the host's `storageDomain`. A deployment that composes no storage still runs — such switches simply last for the process, and each command says so in its reply.
 
 </details>
 
 ## Requirements
 
 - Node.js `^22.19.0 || >=24`
-- DeepSeek Harness `0.1.0-rc.6` or newer
+- DeepSeek Harness `0.1.7-alpha.2` or newer
 - A Feishu or Lark tenant
 
 A native thinking process needs Feishu PC 7.70 / mobile 7.74 or newer; older clients can use `output: 'stream'`.

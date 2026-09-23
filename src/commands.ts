@@ -6,10 +6,10 @@
  * Two commands are the channel's own rather than the host's. `/stop` cancels
  * the running turn — cancellation is an agent method, not a registered command
  * — and `/help` lists what this chat accepts, which no host command provides.
- * @module dsh-lark-channel/commands
+ * @module @nextnowlabs/dsh-lark/commands
  */
 
-import type { HostAgent, HostCommands } from './host.ts'
+import type { HostAgent, HostAgentCancelCause, HostCommands } from './host.ts'
 import { GET_COMMAND } from './outbound-file.ts'
 import { SESSIONS_COMMAND } from './sessions.ts'
 import { CD_COMMAND, WS_COMMAND } from './workspace.ts'
@@ -24,8 +24,15 @@ export const STOP_COMMAND = 'stop'
 export const HELP_COMMAND = 'help'
 
 
-/** The cause recorded when a chat cancels its own turn. */
-const CANCEL_CAUSE = 'user'
+/**
+ * The cause recorded when a chat cancels its own turn.
+ *
+ * A discriminated object, not a label: the host folds this cause into the
+ * durable `turn/end` record, and anything outside its own union reaches an
+ * exhaustive switch that throws — which would cost the turn its ending
+ * altogether rather than merely mislabelling it.
+ */
+const CANCEL_CAUSE: HostAgentCancelCause = { kind: 'user' }
 
 /** Leading slash plus the command name, the only part this module parses. */
 const COMMAND_LINE = /^\/([a-zA-Z][\w-]*)/
@@ -110,7 +117,9 @@ export async function runCommandLine(
   if (commands === undefined) {
     return { reply: `⚠️ 本部署没有组合命令运行时，\`/${name}\` 无法执行。`, resolved: false }
   }
-  const execution = await commands.execute(agent, trimmed, signal)
+  // No wire uploads accompany a chat command: a file sent to the chat lands
+  // in the workspace and reaches the model as a path.
+  const execution = await commands.execute(agent, trimmed, [], signal)
   if (execution === undefined) {
     return { reply: `⚠️ 未知命令 \`/${name}\`。\n\n${helpText(commands, agent)}`, resolved: false }
   }

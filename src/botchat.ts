@@ -20,7 +20,7 @@
  *   speaking is the signal that the exchange is still wanted. This is the
  *   bound that matters: it is what stops an exchange nobody is reading, and it
  *   applies whether or not anyone narrowed the peers.
- * @module dsh-lark-channel/botchat
+ * @module @nextnowlabs/dsh-lark/botchat
  */
 
 /** How many consecutive bot-sourced turns one conversation may run unattended. */

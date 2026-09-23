@@ -12,6 +12,7 @@ describe('instance identity', () => {
     // exists. A change here orphans live conversations.
     expect(identity).toEqual({
       settingsNamespace: 'lark-channel',
+      stateDomain: 'lark_channel',
       secretRef: APP_SECRET_REF,
       sessionPrefix: 'lark-',
     })
@@ -21,9 +22,10 @@ describe('instance identity', () => {
     expect(workspaceSessionId('oc_1', undefined, identity.sessionPrefix)).toBe('lark-oc_1')
   })
 
-  it('keys a named row apart in all three places at once', () => {
+  it('keys a named row apart in all four places at once', () => {
     const second = instanceIdentity('support')
     expect(second.settingsNamespace).toBe('lark-channel-support')
+    expect(second.stateDomain).toBe('lark_channel_support')
     expect(second.secretRef).toBe('LARK_APP_SECRET_SUPPORT')
     expect(second.sessionPrefix).toBe('lark-support-')
     // The one that bites quietest: two bots in ONE group must not derive the
@@ -32,9 +34,11 @@ describe('instance identity', () => {
       .not.toBe(sessionIdFor('oc_shared', instanceIdentity().sessionPrefix))
   })
 
-  it('folds a dashed name into the shape a credential reference allows', () => {
+  it('folds a dashed name into the shapes a credential reference and a domain allow', () => {
     expect(instanceIdentity('cn-ops').secretRef).toBe('LARK_APP_SECRET_CN_OPS')
     expect(instanceIdentity('cn-ops').settingsNamespace).toBe('lark-channel-cn-ops')
+    // A domain name doubles as a backend unit name, which admits no dash.
+    expect(instanceIdentity('cn-ops').stateDomain).toBe('lark_channel_cn_ops')
   })
 
   it('refuses a name that would corrupt the identifiers it becomes part of', () => {

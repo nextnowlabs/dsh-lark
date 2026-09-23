@@ -18,7 +18,7 @@
  * own prompt for attention, and the rest of the etiquette only matters in the
  * situation that needs it — which is why the baton line below rides the
  * message it applies to, rather than sitting here for every human turn.
- * @module dsh-lark-channel/presence
+ * @module @nextnowlabs/dsh-lark/presence
  */
 
 /** How this channel's own prompt section is named among the host's. */

@@ -10,7 +10,7 @@
 import { registerApp } from '@larksuite/channel'
 
 const result = await registerApp({
-  source: 'dsh-lark-channel',
+  source: '@nextnowlabs/dsh-lark',
   appPreset: {
     name: 'DSH Agent',
     desc: 'DSH 会话机器人',

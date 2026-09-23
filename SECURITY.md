@@ -2,11 +2,11 @@
 
 ## Supported versions
 
-The latest published version of `dsh-lark-channel` receives fixes. Older versions are not patched retroactively.
+The latest published version of `@nextnowlabs/dsh-lark` receives fixes. Older versions are not patched retroactively.
 
 ## Reporting a vulnerability
 
-Please use [GitHub private vulnerability reporting](https://github.com/omdsh-dev/dsh-lark/security/advisories/new) rather than a public issue, and include the version, deployment shape (`web` profile or standalone), and reproduction steps. You should hear back within a week.
+Please use [GitHub private vulnerability reporting](https://github.com/nextnowlabs/dsh-lark/security/advisories/new) rather than a public issue, and include the version, deployment shape (`web` profile or standalone), and reproduction steps. You should hear back within a week.
 
 ## Scope worth knowing
 

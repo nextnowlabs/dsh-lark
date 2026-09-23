@@ -4,7 +4,7 @@
  * agent session whose id is derived from that facet alone, so a restarted
  * process reaches the conversation's stored session instead of starting it over
  * and a topic group no longer funnels every thread into one agent.
- * @module dsh-lark-channel/session
+ * @module @nextnowlabs/dsh-lark/session
  */
 
 import type { NormalizedMessage } from '@larksuite/channel'

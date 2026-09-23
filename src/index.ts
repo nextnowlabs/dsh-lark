@@ -2,7 +2,7 @@
  * Lark/Feishu IM bot channel for DeepSeek Harness: each chat drives its own
  * agent, committed assistant output returns as chat messages, and approval
  * questions become interactive cards.
- * @module dsh-lark-channel
+ * @module @nextnowlabs/dsh-lark
  */
 
 /** Cordis plugin name; keep this stable after publishing. */

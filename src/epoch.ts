@@ -20,7 +20,7 @@
  * epoch nobody speaks into costs nothing at all, and the previous session
  * stays on disk where the host's own tools can still reach it — a chat command
  * should not be able to destroy a record.
- * @module dsh-lark-channel/epoch
+ * @module @nextnowlabs/dsh-lark/epoch
  */
 
 /** Start a fresh session for this conversation. Channel-owned: needs no agent. */
@@ -33,7 +33,7 @@ const DEFAULT_MARKER = ''
 export interface ChatEpochsOptions {
   /** Persisted base-session-id → epoch; {@link DEFAULT_MARKER} means the first. */
   readonly entries?: Record<string, string> | undefined
-  /** Deep-merge one patch into the plugin's settings section; false = not composed. */
+  /** Merge one patch into this channel's durable store; false = not durable. */
   readonly persist?: ((patch: { chatEpochs: Record<string, string> }) => Promise<boolean>) | undefined
   /** Operator console line. */
   readonly report?: ((line: string) => void) | undefined
@@ -75,7 +75,7 @@ export class ChatEpochs {
     if (entry === undefined || entry === DEFAULT_MARKER) return 0
     const parsed = Number.parseInt(entry, 10)
     // A malformed entry reads as the first epoch rather than throwing: a
-    // hand-edited settings file must not be able to break every message.
+    // hand-edited store must not be able to break every message.
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0
   }
 
@@ -93,7 +93,7 @@ export class ChatEpochs {
     })
     if (!durable && !this.warnedNotDurable) {
       this.warnedNotDurable = true
-      this.report('lark-channel: new sessions are in-memory only (no settings service); they reset on restart')
+      this.report('lark-channel: new sessions are in-memory only (no durable storage); they reset on restart')
     }
     return { epoch, durable }
   }
@@ -123,6 +123,6 @@ export async function runNewCommand(
 ): Promise<string> {
   const result = await epochs.startNew(baseId)
   await release()
-  const durability = result.durable ? '' : '\n（本部署未组合 settings，重启后会回到上一个会话。）'
+  const durability = result.durable ? '' : '\n（本部署没有可用的持久化存储，重启后会回到上一个会话。）'
   return '🤖 已开新会话，下一条消息从空白上下文开始。\n之前的记录仍在，工作区和模型设置不变。' + durability
 }

@@ -14,7 +14,7 @@
  * question becomes a card with the model's own options as buttons; a click
  * answers it, and so does an ordinary chat reply, because typing an answer is
  * what a person does when none of the buttons fit.
- * @module dsh-lark-channel/questions
+ * @module @nextnowlabs/dsh-lark/questions
  */
 
 import {
@@ -23,7 +23,7 @@ import {
 } from './cards.ts'
 
 /** Marks this plugin's question buttons apart from other card actions. */
-export const QUESTION_ACTION = 'dsh-lark-channel/question'
+export const QUESTION_ACTION = 'dsh-lark/question'
 
 /** How long a question waits for its human before the tool gives up. */
 export const QUESTION_TIMEOUT_MS = 30 * 60 * 1000

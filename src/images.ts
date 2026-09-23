@@ -11,7 +11,7 @@
  * not is absent from `landed` too — over the per-file limit, over the message
  * budget, or a failed download — so it is fetched again here rather than
  * silently going missing, which costs a round trip and keeps the model seeing.
- * @module dsh-lark-channel/images
+ * @module @nextnowlabs/dsh-lark/images
  */
 
 import { readFile } from 'node:fs/promises'

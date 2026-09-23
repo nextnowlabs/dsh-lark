@@ -7,7 +7,7 @@
  * someone deliberately put the bot in. This plugin therefore narrows rather
  * than gates: every list here is empty by default and only restricts when a
  * deployment fills it in.
- * @module dsh-lark-channel/authorization
+ * @module @nextnowlabs/dsh-lark/authorization
  */
 
 import type { ResolvedConfig } from './config.ts'

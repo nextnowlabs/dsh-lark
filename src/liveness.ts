@@ -14,7 +14,7 @@
  * occur must handle that branch explicitly) and the SDK itself applies
  * elsewhere (its meeting sessions run liveness probes for exactly the events
  * that can silently never arrive).
- * @module dsh-lark-channel/liveness
+ * @module @nextnowlabs/dsh-lark/liveness
  */
 
 /** Where the watchdog is in one supervision cycle. */

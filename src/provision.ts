@@ -22,7 +22,7 @@
  * copied into the unit, because a supervisor starts the process with no shell
  * environment and the shipped patch reads exactly those variables. Units are
  * written user-only (0600) for that reason.
- * @module dsh-lark-channel/provision
+ * @module @nextnowlabs/dsh-lark/provision
  */
 
 import { spawnSync } from 'node:child_process'
@@ -38,7 +38,7 @@ import { instanceIdentity, refuseInstanceName } from './instance.ts'
 export const DEFAULT_PROFILE = 'lark'
 
 /** Reverse-DNS label shared by the launchd job and the systemd unit. */
-export const SERVICE_LABEL = 'dev.omdsh.dsh-lark'
+export const SERVICE_LABEL = 'dev.nextnowlabs.dsh-lark'
 
 /** Composition row id this plugin owns, and its section name in the settings document. */
 export const ROW_ID = 'lark-channel'
@@ -112,7 +112,7 @@ export interface ServiceSpec {
  * How to spell this command back to the person running it.
  *
  * Run through `npx`, the binary lives in a throwaway cache and no bare
- * `dsh-lark-channel` exists on the PATH — so telling that person to run one is
+ * `dsh-lark` exists on the PATH — so telling that person to run one is
  * telling them to run something that does not work. Told the form they
  * actually used, both kinds of user can copy what they read.
  *
@@ -123,39 +123,39 @@ export interface ServiceSpec {
  * @returns the command prefix to print.
  */
 export function invocation(scriptPath: string = process.argv[1] ?? ''): string {
-  return scriptPath.includes(`${sep}_npx${sep}`) ? 'npx dsh-lark-channel@latest' : 'dsh-lark-channel'
+  return scriptPath.includes(`${sep}_npx${sep}`) ? 'npx @nextnowlabs/dsh-lark@latest' : 'dsh-lark'
 }
 
 /** Usage text, spelled for the way this process was started. */
 export function usage(self: string = invocation()): string {
-  return USAGE.replaceAll('dsh-lark-channel ', `${self} `)
+  return USAGE.replaceAll('dsh-lark ', `${self} `)
 }
 
-const USAGE = `dsh-lark-channel — Lark/Feishu IM bot channel for DeepSeek Harness
+const USAGE = `dsh-lark — Lark/Feishu IM bot channel for DeepSeek Harness
 
-  dsh-lark-channel start [--profile <name>] [--workspace <dir>]
+  dsh-lark start [--profile <name>] [--workspace <dir>]
       Provision a profile, run it in the background under launchd or
       systemd --user, and show the first-run QR code here until it is
       scanned. Re-running start applies updates by restarting the bot.
 
-  dsh-lark-channel add <name>
+  dsh-lark add <name>
       Add another bot: writes its row, restarts, and shows its QR code here
       until it is scanned. The new bot keeps its own settings, credential,
       and sessions, so two bots in one group never share an agent.
 
-  dsh-lark-channel remove <name>
+  dsh-lark remove <name>
       Take that bot out again. Its credential and settings stay, so adding
       the same name back reaches the same bot.
 
-  dsh-lark-channel upgrade
+  dsh-lark upgrade
       Install the newest CLI globally and restart the bot on it. Through
       npx there is nothing to install: start already runs the newest.
 
-  dsh-lark-channel stop        Stop the bot and remove it from the supervisor;
-                               the profile and its credentials stay.
-  dsh-lark-channel restart     Restart the running bot.
-  dsh-lark-channel status      Report what the supervisor is running.
-  dsh-lark-channel logs [-f]   Print the bot's recent console output; -f follows.
+  dsh-lark stop        Stop the bot and remove it from the supervisor;
+                       the profile and its credentials stay.
+  dsh-lark restart     Restart the running bot.
+  dsh-lark status      Report what the supervisor is running.
+  dsh-lark logs [-f]   Print the bot's recent console output; -f follows.
 
 Options
   --profile <name>    Profile to create and boot. Default: ${DEFAULT_PROFILE}
@@ -170,7 +170,7 @@ export { ownVersion }
 
 /**
  * Parse argv into one command, defaulting a bare invocation to `start` so
- * `npx dsh-lark-channel` on its own does the useful thing.
+ * `npx @nextnowlabs/dsh-lark` on its own does the useful thing.
  * @param argv - arguments after the node executable and the script path.
  * @returns the parsed command.
  * @throws when a verb or flag is unknown, or a flag's value is missing.
@@ -303,7 +303,7 @@ export function dshHome(): string {
 
 /** Where a supervised run writes its console output. */
 export function logPath(): string {
-  return join(homedir(), '.dsh-lark-channel.log')
+  return join(homedir(), '.dsh-lark.log')
 }
 
 /** Absolute path of the unit file this platform uses. */
@@ -314,14 +314,49 @@ export function unitPath(platform: NodeJS.Platform = process.platform): string {
 }
 
 /**
- * Whether the settings document already carries this plugin's section, which is
- * where a completed scan persists its credentials. A top-level key is enough to
- * decide, so no YAML parser — and no dependency on one — is needed.
+ * Where a completed scan leaves its record, on a deployment the CLI can read
+ * without booting the plugin.
+ *
+ * Two media, because the seam moved. Since dsh 0.1.7 the channel keeps its own
+ * state in a storage domain, one JSON document per domain under the harness
+ * home's `storages/`. Before that it wrote a section of the user settings
+ * document — which the host imports into the profile row's config on first boot
+ * and then renames, so a bot onboarded the old way is READ from the renamed
+ * file rather than reported as never scanned.
+ * @param instance - the row's instance name, when it has one.
+ * @returns the candidate files, newest seam first.
+ */
+export function credentialRecords(instance?: string, home: string = dshHome()): string[] {
+  const identity = instanceIdentity(instance)
+  return [
+    join(home, 'storages', `${identity.stateDomain}.json`),
+    join(home, 'settings.yaml'),
+    join(home, 'settings.yaml.imported'),
+  ]
+}
+
+/**
+ * Whether the settings document already carries this plugin's section. A
+ * top-level key is enough to decide, so no YAML parser — and no dependency on
+ * one — is needed.
  * @param document - contents of the settings document.
  * @returns true when the section is present.
  */
 export function hasCredentialSection(document: string, namespace: string = ROW_ID): boolean {
   return new RegExp(`^${namespace}\\s*:`, 'm').test(document)
+}
+
+/**
+ * Whether one storage-domain record holds an onboarded app id. Read as a
+ * substring rather than parsed: the document is one JSON object whose `global`
+ * slot may carry `appId`, and every other table key in it is an opaque chat id
+ * that could contain the same letters.
+ * @param document - contents of the domain's medium.
+ * @returns true when the global record names an app.
+ */
+export function hasStoredAppId(document: string): boolean {
+  const global = /"global"\s*:\s*\{([^}]*)\}/.exec(document)?.[1]
+  return global !== undefined && /"appId"\s*:\s*"[^"]+"/.test(global)
 }
 
 /**
@@ -339,20 +374,29 @@ export function envCredentials(environment: NodeJS.ProcessEnv = process.env): En
 
 /**
  * Whether a scan is still needed: credentials exist in the environment (the
- * unit forwards them) or a previous scan persisted them through the host
- * settings service.
+ * unit forwards them) or a previous scan recorded the app it created.
+ * @param instance - the row's instance name, when it has one.
  * @returns true when the bot already has credentials to connect with.
  */
 export function isOnboarded(instance?: string): boolean {
   // The environment pair belongs to the unnamed row; a named one has its own
-  // credential and its own settings section, so it is never onboarded by it.
+  // credential and its own state domain, so it is never onboarded by it.
   if (instance === undefined && envCredentials() !== undefined) return true
-  try {
-    const document = readFileSync(join(dshHome(), 'settings.yaml'), 'utf8')
-    return hasCredentialSection(document, instanceIdentity(instance).settingsNamespace)
-  } catch {
-    return false
+  const identity = instanceIdentity(instance)
+  for (const candidate of credentialRecords(instance)) {
+    let document: string
+    try {
+      document = readFileSync(candidate, 'utf8')
+    } catch {
+      continue
+    }
+    if (candidate.endsWith('.json')) {
+      if (hasStoredAppId(document)) return true
+      continue
+    }
+    if (hasCredentialSection(document, identity.settingsNamespace)) return true
   }
+  return false
 }
 
 /**
@@ -444,7 +488,7 @@ export function systemdUnit(spec: ServiceSpec): string {
     .map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}\n`)
     .join('')
   return `[Unit]
-Description=dsh-lark-channel (profile ${spec.profile})
+Description=dsh-lark (profile ${spec.profile})
 After=network-online.target
 
 [Service]
@@ -675,12 +719,12 @@ function provision(dsh: string, profile: string, workspace: string): void {
   if (installed !== undefined && isNewer(installed, ownVersion())) {
     throw new Error(
       `profile ${profile} runs ${installed}, newer than this CLI (${ownVersion()}) — `
-      + 'upgrade the CLI first (`npm i -g dsh-lark-channel@latest`) rather than downgrading the bot',
+      + 'upgrade the CLI first (`npm i -g @nextnowlabs/dsh-lark@latest`) rather than downgrading the bot',
     )
   }
-  process.stderr.write(`dsh-lark-channel: provisioning profile ${profile}\n`)
+  process.stderr.write(`dsh-lark: provisioning profile ${profile}\n`)
   ensureProfileBuildPolicy(profile)
-  must([dsh, 'plugin', '--profile', profile, 'add', `dsh-lark-channel@${ownVersion()}`], workspace)
+  must([dsh, 'plugin', '--profile', profile, 'add', `@nextnowlabs/dsh-lark@${ownVersion()}`], workspace)
 }
 
 /** Whether launchd currently holds the job in this user's domain. */
@@ -735,7 +779,7 @@ function ensureLinger(): void {
   const user = userInfo().username
   const check = spawnSync('loginctl', ['show-user', user, '--property=Linger', '--value'], { encoding: 'utf8' })
   if (check.status === 0 && check.stdout.trim() === 'no') {
-    process.stderr.write(`dsh-lark-channel: lingering is off, so the bot stops when you log out — enable it with \`sudo loginctl enable-linger ${user}\`\n`)
+    process.stderr.write(`dsh-lark: lingering is off, so the bot stops when you log out — enable it with \`sudo loginctl enable-linger ${user}\`\n`)
   }
 }
 
@@ -852,7 +896,7 @@ export function patchPath(profile: string): string {
 }
 
 /** Marks a row this CLI wrote, so `remove` can take back exactly what `add` put. */
-const INSTANCE_MARKER = '# dsh-lark-channel bot:'
+const INSTANCE_MARKER = '# dsh-lark bot:'
 
 /**
  * The patch entry one extra bot needs: its own row of this plugin, named.
@@ -863,7 +907,7 @@ export function instanceRow(name: string): string {
   return `${INSTANCE_MARKER} ${name}\n`
     + '- insert:\n'
     + `    - id: lark-channel-${name}\n`
-    + "      name: 'dsh-lark-channel'\n"
+    + "      name: '@nextnowlabs/dsh-lark'\n"
     + '      config:\n'
     + `        instance: ${name}\n`
 }
@@ -928,20 +972,20 @@ async function addBot(requested: string | undefined, name: string): Promise<void
   // CLI's exact version FIRST, which is what `start` does for the same reason.
   alignPluginVersion(profile)
   const added = withInstanceRow(readFileSync(path, 'utf8'), name)
-  if (added === undefined) process.stderr.write(`dsh-lark-channel: bot ${name} is already configured — restarting to finish it\n`)
+  if (added === undefined) process.stderr.write(`dsh-lark: bot ${name} is already configured — restarting to finish it\n`)
   else writeFileSync(path, added)
 
   const from = logSize()
   await restart()
   if (isOnboarded(name)) {
-    process.stderr.write(`dsh-lark-channel: bot ${name} is live — DM it or @-mention it in a group\n`)
+    process.stderr.write(`dsh-lark: bot ${name} is live — DM it or @-mention it in a group\n`)
     return
   }
-  process.stderr.write(`dsh-lark-channel: scan the QR code below in Feishu to create bot ${name}; Ctrl-C leaves it running\n\n`)
+  process.stderr.write(`dsh-lark: scan the QR code below in Feishu to create bot ${name}; Ctrl-C leaves it running\n\n`)
   const scanned = await relayUntilOnboarded(from, Date.now() + ONBOARDING_WATCH_MS, name)
   process.stderr.write(scanned
-    ? `\ndsh-lark-channel: bot ${name} is live — it has its own settings, credential, and sessions\n`
-    : `\ndsh-lark-channel: still waiting for a scan; the bot keeps issuing codes, follow ${logPath()}\n`)
+    ? `\ndsh-lark: bot ${name} is live — it has its own settings, credential, and sessions\n`
+    : `\ndsh-lark: still waiting for a scan; the bot keeps issuing codes, follow ${logPath()}\n`)
 }
 
 /**
@@ -958,7 +1002,7 @@ async function removeBot(requested: string | undefined, name: string): Promise<v
   if (removed === undefined) throw new Error(`no bot named ${name} in ${path}`)
   writeFileSync(path, removed)
   await restart()
-  process.stderr.write(`dsh-lark-channel: bot ${name} removed — its credential and settings stay, so adding it back reaches the same bot\n`)
+  process.stderr.write(`dsh-lark: bot ${name} removed — its credential and settings stay, so adding it back reaches the same bot\n`)
 }
 
 /**
@@ -982,16 +1026,16 @@ function alignPluginVersion(profile: string): void {
   if (installed !== undefined && isNewer(installed, version)) {
     throw new Error(
       `profile ${profile} runs ${installed}, newer than this CLI (${version}) — `
-      + 'upgrade the CLI first (`npm i -g dsh-lark-channel@latest`), or pass --profile for another one',
+      + 'upgrade the CLI first (`npm i -g @nextnowlabs/dsh-lark@latest`), or pass --profile for another one',
     )
   }
   process.stderr.write(
     installed === undefined
-      ? `dsh-lark-channel: installing the plugin ${version} into profile ${profile}\n`
-      : `dsh-lark-channel: profile ${profile} has ${installed}; bringing it to ${version}\n`,
+      ? `dsh-lark: installing the plugin ${version} into profile ${profile}\n`
+      : `dsh-lark: profile ${profile} has ${installed}; bringing it to ${version}\n`,
   )
   ensureProfileBuildPolicy(profile)
-  must([dsh, 'plugin', '--profile', profile, 'add', `dsh-lark-channel@${version}`])
+  must([dsh, 'plugin', '--profile', profile, 'add', `@nextnowlabs/dsh-lark@${version}`])
 }
 
 /**
@@ -1001,7 +1045,7 @@ function alignPluginVersion(profile: string): void {
  */
 export function installedPluginVersion(profile: string): string | undefined {
   try {
-    const manifest = join(dshHome(), 'profiles', profile, 'node_modules', 'dsh-lark-channel', 'package.json')
+    const manifest = join(dshHome(), 'profiles', profile, 'node_modules', '@nextnowlabs/dsh-lark', 'package.json')
     const version = (JSON.parse(readFileSync(manifest, 'utf8')) as { version?: unknown }).version
     return typeof version === 'string' ? version : undefined
   } catch {
@@ -1080,7 +1124,7 @@ const VERSION_CHECK_MS = 2500
  */
 export async function latestVersion(timeoutMs: number = VERSION_CHECK_MS): Promise<string | undefined> {
   try {
-    const response = await fetch('https://registry.npmjs.org/dsh-lark-channel/latest', {
+    const response = await fetch('https://registry.npmjs.org/@nextnowlabs/dsh-lark/latest', {
       signal: AbortSignal.timeout(timeoutMs),
       headers: { accept: 'application/vnd.npm.install-v1+json' },
     })
@@ -1122,7 +1166,7 @@ async function noteNewerRelease(self: string = invocation()): Promise<void> {
   const latest = await latestVersion()
   if (latest === undefined || !isNewer(latest, ownVersion())) return
   process.stderr.write(
-    `dsh-lark-channel: ${latest} is out (running ${ownVersion()}) — upgrade with \`${self} upgrade\`\n`,
+    `dsh-lark: ${latest} is out (running ${ownVersion()}) — upgrade with \`${self} upgrade\`\n`,
   )
 }
 
@@ -1142,21 +1186,21 @@ async function upgrade(profile: string | undefined, workspace: string | undefine
     profile: profile ?? installed.profile ?? DEFAULT_PROFILE,
     workspace: workspace ?? installed.workspace ?? process.cwd(),
   }
-  if (invocation() !== 'dsh-lark-channel') {
+  if (invocation() !== 'dsh-lark') {
     process.stderr.write(
-      'dsh-lark-channel: nothing to upgrade through npx — `npx dsh-lark-channel@latest start`'
+      'dsh-lark: nothing to upgrade through npx — `npx @nextnowlabs/dsh-lark@latest start`'
       + ' already runs the newest, plugin included\n',
     )
     return
   }
-  process.stderr.write('dsh-lark-channel: installing the newest CLI globally\n')
-  must(['npm', 'install', '-g', 'dsh-lark-channel@latest'])
+  process.stderr.write('dsh-lark: installing the newest CLI globally\n')
+  must(['npm', 'install', '-g', '@nextnowlabs/dsh-lark@latest'])
   // Re-exec rather than continue: the version that provisions the profile has
   // to be the version just installed, and this process is still the old one.
   process.stderr.write(
-    `dsh-lark-channel: restarting the bot on the new version (profile ${target.profile}, workspace ${target.workspace})\n`,
+    `dsh-lark: restarting the bot on the new version (profile ${target.profile}, workspace ${target.workspace})\n`,
   )
-  const code = passthrough(['dsh-lark-channel', 'start', '--profile', target.profile, '--workspace', target.workspace])
+  const code = passthrough(['dsh-lark', 'start', '--profile', target.profile, '--workspace', target.workspace])
   process.exitCode = code
 }
 
@@ -1167,7 +1211,7 @@ async function start(profile: string, workspace: string): Promise<void> {
   provision(dsh, profile, workspace)
 
   if (kind === undefined) {
-    process.stderr.write('dsh-lark-channel: no launchd or systemd here — running in the foreground, keep this terminal open\n')
+    process.stderr.write('dsh-lark: no launchd or systemd here — running in the foreground, keep this terminal open\n')
     process.exitCode = passthrough([dsh, '--profile', profile], workspace)
     return
   }
@@ -1177,21 +1221,21 @@ async function start(profile: string, workspace: string): Promise<void> {
   const from = logSize()
   await superviseService(kind, { dsh, profile, workspace, dshHome: process.env.DSH_HOME, credentials: envCredentials() })
   if (kind === 'systemd') ensureLinger()
-  process.stderr.write(`dsh-lark-channel: running in the background, logs at ${logPath()}\n`)
+  process.stderr.write(`dsh-lark: running in the background, logs at ${logPath()}\n`)
 
   if (onboarded) {
-    process.stderr.write('dsh-lark-channel: already onboarded — DM the bot or @-mention it in a group\n')
+    process.stderr.write('dsh-lark: already onboarded — DM the bot or @-mention it in a group\n')
     // Last, and only for a bot that is already up: a version notice must
     // never stand between someone and their QR code.
     await noteNewerRelease()
     return
   }
 
-  process.stderr.write('dsh-lark-channel: scan the QR code below in Feishu; Ctrl-C leaves the bot running\n\n')
+  process.stderr.write('dsh-lark: scan the QR code below in Feishu; Ctrl-C leaves the bot running\n\n')
   const scanned = await relayUntilOnboarded(from, Date.now() + ONBOARDING_WATCH_MS)
   process.stderr.write(scanned
-    ? '\ndsh-lark-channel: bound — the bot is live; manage it with stop, restart, and status\n'
-    : `\ndsh-lark-channel: still waiting for a scan; the bot keeps issuing codes, follow ${logPath()}\n`)
+    ? '\ndsh-lark: bound — the bot is live; manage it with stop, restart, and status\n'
+    : `\ndsh-lark: still waiting for a scan; the bot keeps issuing codes, follow ${logPath()}\n`)
 }
 
 /**
@@ -1206,7 +1250,7 @@ function stop(): void {
   else quiet(['systemctl', '--user', 'disable', '--now', 'dsh-lark.service'])
   rmSync(unitPath(), { force: true })
   if (kind === 'systemd') quiet(['systemctl', '--user', 'daemon-reload'])
-  process.stderr.write(`dsh-lark-channel: stopped — \`${invocation()} start\` brings it back\n`)
+  process.stderr.write(`dsh-lark: stopped — \`${invocation()} start\` brings it back\n`)
 }
 
 /**
@@ -1229,7 +1273,7 @@ async function restart(): Promise<void> {
   } else {
     must(['systemctl', '--user', 'restart', 'dsh-lark.service'])
   }
-  process.stderr.write('dsh-lark-channel: restarted\n')
+  process.stderr.write('dsh-lark: restarted\n')
 }
 
 /**
@@ -1239,7 +1283,7 @@ async function restart(): Promise<void> {
  */
 async function logs(follow: boolean): Promise<void> {
   if (!existsSync(logPath())) {
-    process.stderr.write(`dsh-lark-channel: no log yet at ${logPath()} — has \`${invocation()} start\` run?\n`)
+    process.stderr.write(`dsh-lark: no log yet at ${logPath()} — has \`${invocation()} start\` run?\n`)
     process.exitCode = 1
     return
   }
@@ -1261,7 +1305,7 @@ function status(): void {
   const kind = requireSupervisor()
   if (kind === 'launchd') {
     if (!isLoaded()) {
-      process.stderr.write(`dsh-lark-channel: not running — \`${invocation()} start\` brings it up\n`)
+      process.stderr.write(`dsh-lark: not running — \`${invocation()} start\` brings it up\n`)
       process.exitCode = 3
       return
     }
@@ -1298,7 +1342,7 @@ export async function main(argv: readonly string[]): Promise<void> {
   try {
     await execute(parseArguments(argv))
   } catch (error) {
-    process.stderr.write(`dsh-lark-channel: ${error instanceof Error ? error.message : String(error)}\n`)
+    process.stderr.write(`dsh-lark: ${error instanceof Error ? error.message : String(error)}\n`)
     process.exitCode = 1
   }
 }

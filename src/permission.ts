@@ -15,23 +15,23 @@
  * approval is REFUSED rather than waved through. Someone who reads the name as
  * "allow everything" would be half right and half wrong, which is the worst
  * way to be wrong about a permission.
- * @module dsh-lark-channel/permission
+ * @module @nextnowlabs/dsh-lark/permission
  */
 
 import type { HostAgent, HostCommands, HostPermissionPresets, HostSessionProjections } from './host.ts'
 import type { ConversationSubject } from './session.ts'
 
 /**
- * The `permissions` projection the host publishes for every session: which
- * preset is in force and which ones exist.
+ * The `permissions` projection the host publishes for every session: the
+ * preset currently in force.
+ *
+ * It carries no option list. Since dsh 0.1.7 the projection is a single
+ * `currentValue` and the choices moved to the process-level preset catalog
+ * ({@link HostPermissionPresets.catalog}), so a picker that read options from
+ * here would offer nothing at all — silently, because the read still succeeds.
  */
 export interface PermissionsProjection {
   readonly currentValue?: unknown
-  readonly options?: readonly {
-    readonly value?: unknown
-    readonly name?: unknown
-    readonly description?: unknown
-  }[]
 }
 
 /**
@@ -66,7 +66,7 @@ export interface PresetOption {
 export const PERMISSION_COMMAND = 'permission'
 
 /** Marks this plugin's preset buttons apart from other card actions. */
-export const PERMISSION_ACTION = 'dsh-lark-channel/permission'
+export const PERMISSION_ACTION = 'dsh-lark/permission'
 
 /** The preset this channel treats as the loud one, whatever else a deployment defines. */
 export const UNCONFINED_PRESET = 'danger-full-access'
@@ -115,8 +115,8 @@ const UNCONFINED_SANDBOX = 'danger-full-access'
 const NEVER_ASK = 'never'
 
 /**
- * Read one preset option out of the projection's untyped payload.
- * @param option - one entry of the projection's option list.
+ * Read one preset option out of an untyped payload.
+ * @param option - one entry of the catalog's option list.
  * @returns the option, or undefined for a shape this does not recognize.
  */
 function readOption(option: {
@@ -204,18 +204,17 @@ export function permissionActionValue(value: unknown): PermissionActionValue | u
 }
 
 /**
- * Read which preset one conversation runs under.
+ * Read which preset one conversation runs under, and which ones it could.
  *
- * Through the host's own `permissions` projection, for three reasons that the
- * first two attempts each missed. It is a READ: running `/permission` to find
- * out appends `command/run` and `command/done` to the session log, which made
- * a status card a second writer beside the agent's. It is CHEAP: a projection
- * is folded incrementally and cached, while folding the log per read costs the
- * whole log every time a card is drawn. And it is PUBLISHED: the projection
- * carries a registered schema, unlike a service method or a sentence meant for
- * a human to read.
+ * Two sources, because the host split them. The preset IN FORCE comes from the
+ * session's own `permissions` projection — a READ, cheap and published, where
+ * running `/permission` to find out would append `command/run` and
+ * `command/done` and make a status card a second writer beside the agent. The
+ * CHOICES come from the deployment's catalog, which is process-level: they are
+ * the same for every session and no session event decides them.
  * @param projections - the projection registry, when composed.
  * @param agent - the conversation's live agent.
+ * @param presets - the deployment's preset table, when composed.
  * @returns the state, empty where nothing published one.
  */
 export function readPresets(
@@ -234,11 +233,28 @@ export function readPresets(
   }
   if (value === undefined) return { available: [] }
   const current = typeof value.currentValue === 'string' ? value.currentValue : undefined
-  const available = (value.options ?? [])
-    .map(option => readOption(option))
-    .filter((option): option is PresetOption => option !== undefined)
-    .map(option => withSpec(option, presets))
-  return { ...current === undefined || current === '' ? {} : { current }, available }
+  return { ...current === undefined || current === '' ? {} : { current }, available: readCatalog(presets) }
+}
+
+/**
+ * Every preset this deployment offers, as its own catalog describes them.
+ *
+ * A catalog that cannot be read leaves the picker empty rather than inventing
+ * rows: a button is an offer to run `/permission <name>`, and a name this
+ * channel made up would fail at the host with a sentence no reader can act on.
+ * @param presets - the deployment's preset table, when composed.
+ * @returns the options, in the table's own order.
+ */
+function readCatalog(presets: HostPermissionPresets | undefined): readonly PresetOption[] {
+  if (presets === undefined || typeof presets.catalog !== 'function') return []
+  try {
+    return presets.catalog().options
+      .map(option => readOption(option))
+      .filter((option): option is PresetOption => option !== undefined)
+      .map(option => withSpec(option, presets))
+  } catch {
+    return []
+  }
 }
 
 /**
@@ -257,7 +273,8 @@ export async function switchPreset(
 ): Promise<{ readonly ok: boolean; readonly detail?: string }> {
   if (commands === undefined) return { ok: false, detail: 'no command runtime is composed' }
   const execution = await commands
-    .execute(agent, `/${PERMISSION_COMMAND} ${preset}`, signal)
+    // No wire uploads accompany a channel-driven switch.
+    .execute(agent, `/${PERMISSION_COMMAND} ${preset}`, [], signal)
     .catch((error: unknown) => {
       // A cancelled command is not a failed one, and flattening the two here
       // is invisible from the outside: the caller would see an ordinary

@@ -10,9 +10,9 @@
  * models they do not list, so an unlisted route is set with a note, never
  * rejected.
  *
- * The mapping persists through the host settings service, in the same section
+ * The mapping persists through this channel's own durable store, beside
  * as credentials and workspace switches.
- * @module dsh-lark-channel/model
+ * @module @nextnowlabs/dsh-lark/model
  */
 
 import { modelCard } from './cards.ts'
@@ -24,7 +24,7 @@ import type { ConversationSubject } from './session.ts'
 export const MODEL_COMMAND = 'model'
 
 /** Marks this plugin's model buttons apart from other card actions. */
-export const MODEL_ACTION = 'dsh-lark-channel/model'
+export const MODEL_ACTION = 'dsh-lark/model'
 
 /** How many routes the picker offers before it defers to the typed form. */
 const PICKER_ROWS = 10
@@ -119,7 +119,7 @@ export interface RouteChange {
 export interface ChatModelsOptions {
   /** Persisted conversation-key → serialized route; {@link DEFAULT_MARKER} means default. */
   readonly entries?: Record<string, string> | undefined
-  /** Deep-merge one patch into the plugin's settings section; false = not composed. */
+  /** Merge one patch into this channel's durable store; false = not durable. */
   readonly persist?: ((patch: { chatModels: Record<string, string> }) => Promise<boolean>) | undefined
   /** Operator console line. */
   readonly report?: ((line: string) => void) | undefined
@@ -176,7 +176,7 @@ export class ChatModels {
       })
       if (!durable && !this.warnedNotDurable) {
         this.warnedNotDurable = true
-        this.report('lark-channel: model switches are in-memory only (no settings service); they reset on restart')
+        this.report('lark-channel: model switches are in-memory only (no durable storage); they reset on restart')
       }
     }
     return { changed, durable }
@@ -306,7 +306,7 @@ export async function runModelCommand(
     const result = await store.reset(key)
     if (!result.changed) return { markdown: `🤖 本会话已在使用默认模型 \`${ports.deploymentRoute()}\`。` }
     await ports.release()
-    const durability = result.durable ? '' : '\n（本部署未组合 settings，这次切换在重启后会丢失。）'
+    const durability = result.durable ? '' : '\n（本部署没有可用的持久化存储，这次切换在重启后会丢失。）'
     return { markdown: `🤖 已切回默认模型 \`${ports.deploymentRoute()}\`\n下一条消息起生效，上下文保留。${durability}` }
   }
 
@@ -319,7 +319,7 @@ export async function runModelCommand(
     if (!result.changed) return { markdown: `🤖 本会话已在使用 \`${formatRoute(resolved.route)}\`。` }
     await ports.release()
     const advisory = resolved.listed ? '' : '\n（目录未列出该路由；宿主目录是建议性的，仍按你给的设置。）'
-    const durability = result.durable ? '' : '\n（本部署未组合 settings，这次切换在重启后会丢失。）'
+    const durability = result.durable ? '' : '\n（本部署没有可用的持久化存储，这次切换在重启后会丢失。）'
     return {
       markdown: `🤖 已切换到 \`${formatRoute(resolved.route)}\`\n下一条消息起生效，上下文保留。${advisory}${durability}`,
     }

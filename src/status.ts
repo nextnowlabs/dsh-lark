@@ -3,7 +3,7 @@
  * agent is doing, assembled by the bridge from channel state alone — no agent
  * is created to answer it, because "what would my next message do" must be
  * answerable before a first message exists.
- * @module dsh-lark-channel/status
+ * @module @nextnowlabs/dsh-lark/status
  */
 
 import { statusCard } from './cards.ts'
@@ -74,7 +74,7 @@ export function readMeters(
 export const STATUS_COMMAND = 'status'
 
 /** Marks this plugin's status refresh apart from other card actions. */
-export const STATUS_ACTION = 'dsh-lark-channel/status'
+export const STATUS_ACTION = 'dsh-lark/status'
 
 /** Card payload carried by a status refresh. */
 export interface StatusActionValue extends ConversationSubject {

@@ -3,7 +3,7 @@
  * Two renderers share the {@link OutboundRenderer} surface — a plain-message
  * renderer that sends one markdown message per completed step, and a streaming
  * renderer that keeps one typewriter card per turn.
- * @module dsh-lark-channel/outbound
+ * @module @nextnowlabs/dsh-lark/outbound
  */
 
 import type { MarkdownStreamController, SendInput, SendOptions, SendResult } from '@larksuite/channel'

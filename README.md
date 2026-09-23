@@ -1,6 +1,6 @@
 # dsh-lark · DeepSeek Harness 飞书 / Lark 插件
 
-[![npm](https://img.shields.io/npm/v/dsh-lark-channel)](https://www.npmjs.com/package/dsh-lark-channel) [![CI](https://github.com/omdsh-dev/dsh-lark/actions/workflows/ci.yml/badge.svg)](https://github.com/omdsh-dev/dsh-lark/actions/workflows/ci.yml) [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+[![npm](https://img.shields.io/npm/v/@nextnowlabs/dsh-lark)](https://www.npmjs.com/package/@nextnowlabs/dsh-lark) [![CI](https://github.com/nextnowlabs/dsh-lark/actions/workflows/ci.yml/badge.svg)](https://github.com/nextnowlabs/dsh-lark/actions/workflows/ci.yml) [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
 简体中文 | [English](README.en.md)
 
@@ -11,8 +11,8 @@
 ## 快速开始
 
 ```sh
-npm i -g dsh-lark-channel
-dsh-lark-channel start
+npm i -g @nextnowlabs/dsh-lark
+dsh-lark start
 ```
 
 终端会显示二维码。用飞书扫码完成应用创建，然后私聊机器人，或在群里 @ 它即可开始。
@@ -22,7 +22,7 @@ dsh-lark-channel start
 不想装到全局也可以直接跑，只是之后每条命令都要带 `npx`：
 
 ```sh
-npx dsh-lark-channel@latest start
+npx @nextnowlabs/dsh-lark@latest start
 ```
 
 如果还没有安装 DeepSeek Harness，先运行：
@@ -101,21 +101,21 @@ Agent 的执行过程会显示在飞书中；需要你参与时，会发送提�
 macOS 和采用 systemd 的 Linux 会使用用户级后台服务，关闭终端后仍可运行：
 
 ```sh
-dsh-lark-channel status
-dsh-lark-channel logs -f
-dsh-lark-channel restart
-dsh-lark-channel stop
+dsh-lark status
+dsh-lark logs -f
+dsh-lark restart
+dsh-lark stop
 ```
 
-用 `npx` 启动的话，这些命令同样要带 `npx dsh-lark-channel@latest` 前缀——工具会按你实际的启动方式打印提示，读到什么就能直接粘贴。
+用 `npx` 启动的话，这些命令同样要带 `npx @nextnowlabs/dsh-lark@latest` 前缀——工具会按你实际的启动方式打印提示，读到什么就能直接粘贴。
 
 升级：
 
 ```sh
-dsh-lark-channel upgrade
+dsh-lark upgrade
 ```
 
-它会装上最新的 CLI 并在新版本上重启机器人。用 npx 的话不需要这一步，`npx dsh-lark-channel@latest start` 本来就是最新。有新版本时，`start` 和 `status` 会顺带提醒你一行。
+它会装上最新的 CLI 并在新版本上重启机器人。用 npx 的话不需要这一步，`npx @nextnowlabs/dsh-lark@latest start` 本来就是最新。有新版本时，`start` 和 `status` 会顺带提醒你一行。
 
 连接异常时，插件会在限额和退避控制下自动重建 WebSocket，避免进程仍在但机器人已经静默离线。
 
@@ -124,7 +124,7 @@ dsh-lark-channel upgrade
 给第二个飞书应用添加一套独立的 Agent：
 
 ```sh
-dsh-lark-channel add reviewer
+dsh-lark add reviewer
 ```
 
 命令会写入新实例、重启服务并显示二维码。扫码后，这个机器人拥有自己的设置、App Secret 和 session，不会与第一个机器人共享上下文。
@@ -132,7 +132,7 @@ dsh-lark-channel add reviewer
 把两个机器人加入同一个群后，它们可以通过 @ 把回合交给对方。例如，让一个 Agent 完成修改后 @ 另一个 Agent 复核，后者也可以 @ 回去要求调整。默认最多连续进行 6 个机器人轮次；任何人发言都会恢复额度。需要移除时：
 
 ```sh
-dsh-lark-channel remove reviewer
+dsh-lark remove reviewer
 ```
 
 移除会保留该实例的凭据和设置，之后用同一个名字重新添加即可恢复。
@@ -140,7 +140,7 @@ dsh-lark-channel remove reviewer
 如果希望飞书和 `dsh web` 共用同一个 profile：
 
 ```sh
-dsh plugin --profile web add dsh-lark-channel@latest
+dsh plugin --profile web add @nextnowlabs/dsh-lark@latest
 dsh web
 ```
 
@@ -153,7 +153,7 @@ dsh web
 - `instance` 用于命名额外的机器人实例；第一个机器人保持未命名，以兼容已有设置和会话。
 - `botPeers` 可以限制允许对话的机器人，`botHops` 控制连续机器人轮次，默认是 6。
 - 会改变状态的卡片绑定原聊天，转发到其他聊天后不能操作原会话。
-- 部署提供 credentials 服务时，扫码得到的 App Secret 会存入其中；旧版本写在 settings 中的 secret 会在下次启动时自动迁移。
+- 扫码得到的 App Secret 存入宿主 credentials 服务，App ID 存在本渠道自己的状态域里（`$DSH_HOME/storages/` 下每个实例一个 JSON 文件，权限 0600）；旧版本写在 `settings.yaml` 里的 secret 会在下次启动时自动迁移，该文件被宿主改名后其中的 `chatWorkspaces` 等状态会作为初始值读入，不会丢。
 - 图片附件默认关闭；只有确认当前模型支持视觉时，才应开启 `attachImages`。
 - `receiveFiles` 默认开：入站文件落在当前会话工作区的 `.dsh-lark/inbox/<时间戳>-<消息哈希>/` 下，只增不删，清理是你的决定；首次落地时会提醒把 `.dsh-lark/` 加进 `.gitignore`，但不会替你去改这个文件。
 - `sendFiles` 默认开：私聊直接发，群聊每次弹审批卡片，卡片上是文件在工作区内的位置、工作区名和大小（不是宿主的绝对路径——群里每个人都会看到它）；**没有关闭群聊审批的开关**，因为那会是提示注入外泄链的官方后门。
@@ -162,14 +162,15 @@ dsh web
 - 审批结束卡会记录决定人：回调未带姓名时，渠道会尽力从当前聊天成员名单解析；没有成员查询权限、查询失败或成员已不在群内时仍安全显示 open_id，绝不会影响审批或文件发送。
 - 单文件上限默认 20 MiB，收发分别由 `maxReceiveFileBytes` / `maxSendFileBytes` 配置；文档类产物（pdf / xlsx / docx）在聊天里只能下载、没有在线预览，这是上游 SDK 把普通文件固定按 `stream` 类型上传带来的已知取舍。
 - 语音消息只落盘，不会被转写成文字。
-- 配置在启动时读取，修改后需要重启服务。
+- 配置就是 profile 补丁里这一行的 `config`（`~/.dsh/profiles/<profile>/cordis.patch.yml`），也是「设置 → 插件」里能改的东西；改完由宿主热重载该行，不必手动重启。
+- 会话自己的状态（`/cd` 的工作区、`/model` 的路由、`/new` 的代数、`/session` 的选择）不写进配置，而是走宿主的 `storageDomain`：没有组合存储的部署仍可运行，只是这些切换仅本次进程有效，命令回复里会说明。
 
 </details>
 
 ## 环境要求
 
 - Node.js `^22.19.0 || >=24`
-- DeepSeek Harness `0.1.0-rc.6` 或更新版本
+- DeepSeek Harness `0.1.7-alpha.2` 或更新版本
 - 飞书或 Lark 租户
 
 原生思考过程需要飞书 PC 7.70、移动端 7.74 或更新版本；旧客户端可以使用 `output: 'stream'`。

@@ -1,6 +1,6 @@
 /**
  * Runtime boundary and Cordis activation for the plugin.
- * @module dsh-lark-channel/runtime
+ * @module @nextnowlabs/dsh-lark/runtime
  */
 
 import { createLarkChannel, registerApp } from '@larksuite/channel'
@@ -18,7 +18,9 @@ import { beginOnboarding } from './onboarding.ts'
 import type { LarkCredentials, OnboardedApp, RegisterAppPort } from './onboarding.ts'
 import { describeAuthorization, resolveAuthorization } from './authorization.ts'
 import type { Authorization } from './authorization.ts'
-import type { HostLoader, HostSettings } from './host.ts'
+import type { HostLoader, HostStorageDomain } from './host.ts'
+import { openStateStore } from './state.ts'
+import type { ChannelState, StatePatch, StateStore } from './state.ts'
 
 /** Resolved configuration whose credentials are present; the transport can be built. */
 export type ChannelConfig = ResolvedConfig & LarkCredentials
@@ -71,7 +73,7 @@ export function channelOptions(config: ChannelConfig, authorization: Authorizati
     appId: config.appId,
     appSecret: config.appSecret,
     policy,
-    source: 'dsh-lark-channel',
+    source: '@nextnowlabs/dsh-lark',
     respectProxyEnv: true,
   }
   // The transport batches by CHAT: messages arriving within its window are
@@ -176,9 +178,10 @@ export const internals: {
 
 /**
  * Apply the plugin to its Cordis context. With credentials configured (entry
- * config or a stored settings section) the transport connects directly;
- * without them the official QR registration flow runs first and persists the
- * scanned credentials through the host `settings` service when one is composed.
+ * config or a stored onboarding record) the transport connects directly;
+ * without them the official QR registration flow runs first and persists what
+ * it scanned through the host `credentials` seam and this channel's own
+ * durable state domain, when one is composed.
  * @param ctx - Scoped plugin context; requires the `agents` service.
  * @param config - Configuration resolved by Cordis from the exported schema.
  */
@@ -193,9 +196,9 @@ export function apply(ctx: Context, config: Config): void {
    * a groups-only channel (no owner configured yet) is a valid deployment.
    */
   // Durable plugin state (onboarded credentials, workspace switches) goes
-  // through the settings section when one is composed; false tells the writer
-  // the value lives in memory only.
-  let persistState = async (_patch: object): Promise<boolean> => false
+  // through this channel's own storage domain when the deployment composed
+  // one; false tells the writer the value lives in memory only.
+  let persistState = async (_patch: StatePatch): Promise<boolean> => false
 
   const start = (resolved: ChannelConfig): void => {
     if (!active || started) return
@@ -214,50 +217,52 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   const bootstrap = async (): Promise<void> => {
-    // Loader siblings mount concurrently; whether the optional settings
-    // service exists is only decided once the application settles.
+    // Loader siblings mount concurrently; whether the optional storage service
+    // exists is only decided once the application settles.
     await (ctx.get('loader') as HostLoader | undefined)?.await()
     if (!active) return
 
-    let resolved = resolveConfig(config)
-    // A named row keys its settings, its credential, and its session ids apart
-    // from every other row; an unnamed one keeps the original identifiers.
-    const identity = instanceIdentity(resolved.instance)
+    // A named row keys its state domain, its credential, and its session ids
+    // apart from every other row; an unnamed one keeps the original
+    // identifiers.
+    const identity = instanceIdentity(config.instance)
+    const store = await openStateStore(
+      ctx.get('storageDomain') as HostStorageDomain | undefined,
+      identity.stateDomain,
+      internals.notify,
+    )
+    if (!active) {
+      await store.close()
+      return
+    }
+    ctx.effect(() => () => store.close(), 'lark:state')
+
     let persist = async (_app: OnboardedApp): Promise<boolean> => false
     const credentials = ctx.get('credentials') as HostCredentials | undefined
-    const settings = ctx.get('settings') as HostSettings | undefined
-    if (settings !== undefined) {
-      try {
-        const scope = settings.register(identity.settingsNamespace, Config, { base: config })
-        resolved = resolveConfig(scope.get() as Config)
-        persistState = async (patch) => {
-          await scope.update(patch)
-          return true
-        }
-        // Onboarding hands the secret to the credentials seam and records only
-        // the reference, so the settings document never learns it.
-        persist = async (app) => {
-          const stored = await internals.storeSecret(credentials, app.appSecret, internals.notify, identity.secretRef)
-          return persistState({
-            ...app,
-            ...stored.ref === undefined ? {} : { appSecretRef: stored.ref },
-            // Blanked rather than omitted: the patch deep-merges, so a key is
-            // overwritten and never removed, and an empty secret is an absent
-            // one everywhere here.
-            ...stored.inSettings ? {} : { appSecret: '' },
-          })
-        }
-      } catch (error) {
-        ctx.logger.error(
-          'settings registration failed; continuing with entry config only: %s',
-          error instanceof Error ? error.message : error,
-        )
-      }
+    let resolved = resolveConfig(seedFrom(config, store))
+    persistState = async (patch) => {
+      const durable = await store.apply(patch)
+      // The store keeps the value either way, so what a later read of the
+      // SAME process sees does not depend on the answer — only whether it
+      // survives a restart does.
+      return durable
+    }
+    // Onboarding hands the secret to the credentials seam and records only
+    // the reference, so the durable store never learns it.
+    persist = async (app) => {
+      const stored = await internals.storeSecret(credentials, app.appSecret, internals.notify, identity.secretRef)
+      return persistState({
+        appId: app.appId,
+        appSecret: stored.ref === undefined ? app.appSecret : '',
+        ...stored.ref === undefined ? {} : { appSecretRef: stored.ref },
+        ...app.registeredBy === undefined ? {} : { registeredBy: app.registeredBy },
+      })
     }
 
-    // A secret already sitting in the settings document moves behind a
-    // reference on this boot, so a bot onboarded before the seam was used is
-    // repaired by restarting rather than by scanning again.
+    // A secret already sitting in the composition's config or in an imported
+    // settings section moves behind a reference on this boot, so a bot
+    // onboarded before the seam was used is repaired by restarting rather
+    // than by scanning again.
     const migratedRef = await migrateAppSecret(credentials, resolved, persistState, internals.notify, identity.secretRef)
     if (migratedRef !== undefined) resolved = { ...resolved, appSecret: '', appSecretRef: migratedRef }
 
@@ -284,4 +289,37 @@ export function apply(ctx: Context, config: Config): void {
   void bootstrap().catch((error: unknown) => {
     ctx.logger.error('lark-channel bootstrap failed: %s', error instanceof Error ? error.message : error)
   })
+}
+
+/**
+ * Fold what an upgraded deployment already had into the run's configuration.
+ *
+ * Two sources, in increasing precedence: the entry config, and the row's own
+ * durable state. The first is how a deployment that stored these maps in the
+ * removed settings document keeps them — the host imports that document's
+ * sections into the profile row's `config`, so the values arrive as
+ * configuration once and are read here as a SEED. The second is what this
+ * channel has written since.
+ *
+ * Precedence is per KEY, not per map: a conversation `/cd`-ed after the
+ * upgrade must not be dragged back to where the imported document left it by
+ * some other conversation still living there.
+ * @param config - the entry configuration, as the Loader resolved it.
+ * @param store - this row's durable state.
+ * @returns the configuration to resolve, with stored values folded in.
+ */
+function seedFrom(config: Config, store: StateStore): Config {
+  const stored: ChannelState = store.snapshot()
+  return {
+    ...config,
+    chatWorkspaces: { ...config.chatWorkspaces, ...stored.chatWorkspaces },
+    chatModels: { ...config.chatModels, ...stored.chatModels },
+    chatEpochs: { ...config.chatEpochs, ...stored.chatEpochs },
+    chatSessions: { ...config.chatSessions, ...stored.chatSessions },
+    ...stored.appId === undefined ? {} : { appId: stored.appId },
+    ...stored.appSecretRef === undefined ? {} : { appSecretRef: stored.appSecretRef },
+    // Only a deployment with no credentials provider ever stored the secret
+    // itself, and its own record wins over a stale literal in the config.
+    ...stored.appSecret === undefined ? {} : { appSecret: stored.appSecret },
+  }
 }

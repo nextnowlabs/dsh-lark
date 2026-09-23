@@ -4,12 +4,14 @@ import { delimiter, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   DEFAULT_PROFILE,
+  credentialRecords,
   ROW_ID,
   SERVICE_LABEL,
   dshHome,
   envCredentials,
   ensureProfileBuildPolicy,
   hasCredentialSection,
+  hasStoredAppId,
   isOnboarded,
   launchdPlist,
   ownVersion,
@@ -337,6 +339,57 @@ describe('onboarding detection', () => {
     writeFileSync(join(home, 'settings.yaml'), `${ROW_ID}:\n  appId: cli_x\n`)
     expect(isOnboarded()).toBe(true)
   })
+
+  it('reads a bot onboarded the old way out of the document the host renamed', () => {
+    // dsh 0.1.7 imports the removed settings document's sections into the
+    // profile row's config and renames the file. A bot scanned before that is
+    // onboarded — reporting it as never scanned would print a second QR code
+    // and create a second app on the platform.
+    const home = mkdtempSync(join(tmpdir(), 'home-'))
+    delete process.env.LARK_APP_ID
+    delete process.env.LARK_APP_SECRET
+    process.env.DSH_HOME = home
+    writeFileSync(join(home, 'settings.yaml.imported'), `${ROW_ID}:\n  appId: cli_old\n`)
+    expect(isOnboarded()).toBe(true)
+  })
+
+  it('reads the state domain this channel writes its own record into', () => {
+    const home = mkdtempSync(join(tmpdir(), 'home-'))
+    delete process.env.LARK_APP_ID
+    delete process.env.LARK_APP_SECRET
+    process.env.DSH_HOME = home
+    const record = (appId?: string) => JSON.stringify({
+      unit: { name: 'lark_channel', version: 1 },
+      global: appId === undefined ? {} : { appId },
+      tables: { chat_workspaces: { oc_chat_1: 'appId: cli_not_this_one' } },
+    })
+
+    mkdirSync(join(home, 'storages'), { recursive: true })
+    writeFileSync(join(home, 'storages', 'lark_channel.json'), record())
+    expect(isOnboarded()).toBe(false)
+    // A chat key that merely CONTAINS the app id is not one: only the global
+    // record says a bot was onboarded.
+    expect(hasStoredAppId(record())).toBe(false)
+    // Candidates are probed newest seam first, with the renamed document last.
+    expect(credentialRecords(undefined, home).at(-1)).toBe(join(home, 'settings.yaml.imported'))
+    writeFileSync(join(home, 'storages', 'lark_channel.json'), record('cli_stored'))
+    expect(isOnboarded()).toBe(true)
+  })
+
+  it('keeps a named row on its own record', () => {
+    const home = mkdtempSync(join(tmpdir(), 'home-'))
+    delete process.env.LARK_APP_ID
+    delete process.env.LARK_APP_SECRET
+    process.env.DSH_HOME = home
+    mkdirSync(join(home, 'storages'), { recursive: true })
+    writeFileSync(
+      join(home, 'storages', 'lark_channel_support.json'),
+      JSON.stringify({ global: { appId: 'cli_support' }, tables: {} }),
+    )
+    expect(isOnboarded('support')).toBe(true)
+    // The unnamed row is a different bot with a different record.
+    expect(isOnboarded()).toBe(false)
+  })
 })
 
 describe('servicePath', () => {
@@ -545,20 +598,20 @@ describe('scan console', () => {
 describe('how the command spells itself', () => {
   it('answers with the form the caller actually used', () => {
     // Run through npx the binary lives in a throwaway cache, so telling that
-    // caller to run a bare `dsh-lark-channel` is telling them to run nothing.
-    expect(invocation('/home/dev/.npm/_npx/abc123/node_modules/dsh-lark-channel/lib/cli.js'))
-      .toBe('npx dsh-lark-channel@latest')
-    expect(invocation('/usr/local/lib/node_modules/dsh-lark-channel/lib/cli.js'))
-      .toBe('dsh-lark-channel')
+    // caller to run a bare `dsh-lark` is telling them to run nothing.
+    expect(invocation('/home/dev/.npm/_npx/abc123/node_modules/@nextnowlabs/dsh-lark/lib/cli.js'))
+      .toBe('npx @nextnowlabs/dsh-lark@latest')
+    expect(invocation('/usr/local/lib/node_modules/@nextnowlabs/dsh-lark/lib/cli.js'))
+      .toBe('dsh-lark')
     // An unknown path is the installed form: the shorter, likelier one.
-    expect(invocation('')).toBe('dsh-lark-channel')
+    expect(invocation('')).toBe('dsh-lark')
   })
 
   it('spells every line of the usage text the same way', () => {
-    const text = usage('npx dsh-lark-channel@latest')
-    expect(text).toContain('npx dsh-lark-channel@latest start')
-    expect(text).toContain('npx dsh-lark-channel@latest add <name>')
-    expect(text).not.toMatch(/\n {2}dsh-lark-channel /)
+    const text = usage('npx @nextnowlabs/dsh-lark@latest')
+    expect(text).toContain('npx @nextnowlabs/dsh-lark@latest start')
+    expect(text).toContain('npx @nextnowlabs/dsh-lark@latest add <name>')
+    expect(text).not.toMatch(/\n {2}dsh-lark /)
   })
 })
 
@@ -625,10 +678,13 @@ describe('never downgrading a profile', () => {
   })
 
   it('treats a profile ahead of the CLI as newer', () => {
-    // The comparison the guard makes: a bot already running 0.0.6 must not be
-    // pushed back to 0.0.5, whose settings shape predates the credential
-    // reference — it would run, find no credentials, and ask to be set up again.
-    expect(isNewer('0.0.6', ownVersion().replace(/^0\.0\.\d+/, '0.0.5'))).toBe(true)
-    expect(isNewer('0.0.5', '0.0.6')).toBe(false)
+    // The comparison the guard makes: a bot already running a version this CLI
+    // would push back from must not be pushed back. Rewriting the CLI's own
+    // version to a strictly older one keeps the test true as this package
+    // releases, which a pinned pair would not.
+    const [major = 0, minor = 0] = ownVersion().split('.').map(Number)
+    const older = minor > 0 ? `${major}.${minor - 1}.0` : `${major}.0.0`
+    expect(isNewer(ownVersion(), older)).toBe(true)
+    expect(isNewer(older, ownVersion())).toBe(false)
   })
 })

@@ -22,7 +22,7 @@
  *   the model wrote: translating a command would be a lie about what runs.
  * - **No images.** These cards are built at runtime and every image would need
  *   an uploaded `img_key`, so headers are text and status is carried by ink.
- * @module dsh-lark-channel/cards
+ * @module @nextnowlabs/dsh-lark/cards
  */
 
 import { formatByteSize } from './format.ts'

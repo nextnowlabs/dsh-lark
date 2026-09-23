@@ -9,7 +9,7 @@
  * A copy is exactly where a unit label drifts from the arithmetic under it, so
  * there is one of each here: binary steps with binary labels, in whichever voice
  * the reader is being addressed in.
- * @module dsh-lark-channel/format
+ * @module @nextnowlabs/dsh-lark/format
  */
 
 /** Units past a byte, in the order a size climbs through them. */

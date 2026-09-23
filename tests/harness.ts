@@ -18,6 +18,8 @@ import { internals } from '../src/runtime.ts'
 import type { ChannelConfig } from '../src/runtime.ts'
 import type { ChannelPort } from '../src/bridge.ts'
 import type {
+  HostAgent,
+  HostAgentCancelCause,
   HostAgentOptions,
   HostImageLimits,
   HostAttachments,
@@ -25,10 +27,11 @@ import type {
   HostAgentPresets,
   HostApprovalOutcome,
   HostDefaultModel,
-  HostSettings,
   HostUserMessage,
 } from '../src/host.ts'
 import type { RegisterAppPort } from '../src/onboarding.ts'
+import { STATE_TABLES } from '../src/state.ts'
+import type { ChannelState } from '../src/state.ts'
 
 /**
  * How many inbound subscriptions `installBridge` opens: `message`,
@@ -402,9 +405,9 @@ export interface CreatedAgent {
   registeredTools: { name: string }[]
   agent: {
     id: string
-    session: { id: string; events: { type: string; data: unknown }[] }
+    session: { id: string }
     followup: ReturnType<typeof vi.fn<(m: HostUserMessage) => void>>
-    cancel: ReturnType<typeof vi.fn<(cause: string) => void>>
+    cancel: ReturnType<typeof vi.fn<(cause: HostAgentCancelCause) => void>>
     whenIdle: () => Promise<void>
     runMaintenance: <T>(task: (signal: AbortSignal) => Promise<T>) => Promise<T>
     /** Test hook: hold the agent as if a turn were driving it. */
@@ -435,6 +438,9 @@ export function createFakePermissionPresets(
       if (spec === undefined) throw new Error(`dsh: unknown preset ${name}`)
       return spec
     },
+    // The catalog is where the CHOICES live since 0.1.7; the session's own
+    // projection carries only the preset in force.
+    catalog: () => ({ options: Object.keys(table).map(value => ({ value })) }),
   }
 }
 
@@ -557,11 +563,12 @@ export function createFakeAgents(options: { readonly canRegister?: boolean } = {
     let driving = false
     return {
       id: sessionId,
-      // A live session carries its log; several host services fold their state
-      // out of it rather than mirroring it, and this channel reads two that way.
-      session: { id: sessionId, events: [] },
+      // Only the identity: a 0.1.7 session exposes no raw event array, and the
+      // state this channel used to fold out of one now comes from the service
+      // that owns it.
+      session: { id: sessionId },
       followup: vi.fn<(m: HostUserMessage) => void>(),
-      cancel: vi.fn<(cause: string) => void>(),
+      cancel: vi.fn<(cause: HostAgentCancelCause) => void>(),
       whenIdle: async () => {
         while (driving || owner !== undefined) {
           if (owner !== undefined) await owner.catch(() => undefined)
@@ -585,8 +592,12 @@ export function createFakeAgents(options: { readonly canRegister?: boolean } = {
    * Run one composition the way the real factory does: on a scoped context
    * carrying the per-agent tools and prompt services, awaited BEFORE the agent
    * is published, so a rejection surfaces to the caller and yields no agent.
+   *
+   * The agent rides along with its context, which is the host's own
+   * `AgentSetup` arity — the one moment a composition holds both, and what a
+   * per-agent view resolved before any agent existed is built from.
    */
-  const compose = async (setup?: (agentCtx: Context) => Promise<void>) => {
+  const compose = async (setup: ((agentCtx: Context, agent: HostAgent) => Promise<void>) | undefined, agent: HostAgent) => {
     const guards: ((execution: { name: string }) => string | undefined)[] = []
     const sections: { name: string; order: number; text: string }[] = []
     /** Tool definitions this agent's composition registered in its own layer. */
@@ -617,7 +628,7 @@ export function createFakeAgents(options: { readonly canRegister?: boolean } = {
         sections.push(s)
         return () => undefined
       } })
-      await setup(agentCtx)
+      await setup(agentCtx, agent)
     }
     return {
       setupRan: setup !== undefined,
@@ -642,7 +653,7 @@ export function createFakeAgents(options: { readonly canRegister?: boolean } = {
     async resume(options: {
       readonly resumeSessionId: string
       readonly agentOptions?: HostAgentOptions
-      readonly setup?: (agentCtx: Context) => Promise<void>
+      readonly setup?: (agentCtx: Context, agent: HostAgent) => Promise<void>
     }) {
       resumed.push(options.resumeSessionId)
       if (!resumable.has(options.resumeSessionId)) {
@@ -653,7 +664,7 @@ export function createFakeAgents(options: { readonly canRegister?: boolean } = {
         sessionId: options.resumeSessionId,
         meta: undefined,
         agentOptions: options.agentOptions,
-        ...await compose(options.setup),
+        ...await compose(options.setup, agent),
         agent,
         dispose: vi.fn<() => Promise<void>>(async () => {}),
       }
@@ -664,7 +675,7 @@ export function createFakeAgents(options: { readonly canRegister?: boolean } = {
       readonly sessionId: string
       readonly meta?: { readonly cwd?: string; readonly agentPreset?: string }
       readonly agentOptions?: HostAgentOptions
-      readonly setup?: (agentCtx: Context) => Promise<void>
+      readonly setup?: (agentCtx: Context, agent: HostAgent) => Promise<void>
     }) {
       made.push(options.sessionId)
       const agent = makeAgent(options.sessionId)
@@ -672,7 +683,7 @@ export function createFakeAgents(options: { readonly canRegister?: boolean } = {
         sessionId: options.sessionId,
         meta: options.meta === undefined ? undefined : { ...options.meta },
         agentOptions: options.agentOptions,
-        ...await compose(options.setup),
+        ...await compose(options.setup, agent),
         agent,
         dispose: vi.fn<() => Promise<void>>(async () => {}),
       }
@@ -714,7 +725,8 @@ export async function mountChannel(
   config: ConfigOverrides = {},
   services: {
     defaultModel?: HostDefaultModel
-    settings?: HostSettings
+    /** The `storageDomain` form this channel keeps its own state in. */
+    storage?: object
     registerApp?: RegisterAppPort
     presets?: HostAgentPresets
     /**
@@ -769,7 +781,7 @@ export async function mountChannel(
   }
   ctx.provide('agents', agents.service)
   if (services.defaultModel !== undefined) ctx.provide('agentDefaultModel', services.defaultModel)
-  if (services.settings !== undefined) ctx.provide('settings', services.settings)
+  if (services.storage !== undefined) ctx.provide('storageDomain', services.storage)
   if (services.presets !== undefined) ctx.provide('agentPresets', services.presets)
   if (services.tools !== undefined) ctx.provide('tools', services.tools)
   if (services.workspaces !== undefined) ctx.provide('workspaceRegistry', services.workspaces)
@@ -816,7 +828,7 @@ export async function mountChannel(
   const fiber = await ctx.plugin(plugin, merged)
   // Activation bootstraps asynchronously; hold until the bridge subscribed when
   // the mount alone is expected to reach a connected channel.
-  if (merged.appId !== undefined && merged.appSecret !== undefined && services.settings === undefined) {
+  if (merged.appId !== undefined && merged.appSecret !== undefined && services.storage === undefined) {
     await vi.waitFor(() => {
       if (fake.state.subscriptions !== INBOUND_SUBSCRIPTIONS) throw new Error('bridge not subscribed yet')
     })
@@ -843,8 +855,14 @@ export async function mountChannel(
   }
 }
 
-/** An in-memory `agentPresets` roster recording every resolve and mount. */
-export function createFakePresets(ids: string[] = ['default'], defaultId = ids[0]!) {
+/**
+ * An in-memory `agentPresets` roster recording every resolve and mount.
+ * @param ids - the declared preset ids.
+ * @param defaultId - the id a caller that names none resolves to.
+ * @param broken - preset ids that resolve but cannot be composed, as the host
+ * reports them: metadata first, refusal at `mount`.
+ */
+export function createFakePresets(ids: string[] = ['default'], defaultId = ids[0]!, broken: string[] = []) {
   const mounted: { id: string | undefined; scoped: boolean }[] = []
   const resolved: (string | undefined)[] = []
   const presets: HostAgentPresets = {
@@ -852,14 +870,11 @@ export function createFakePresets(ids: string[] = ['default'], defaultId = ids[0
       resolved.push(id)
       const wanted = id ?? defaultId
       if (!ids.includes(wanted)) throw new Error(`agent-presets: unknown preset "${wanted}"`)
-      return { id: wanted }
+      return broken.includes(wanted) ? { id: wanted, broken: 'its row failed to activate (fake)' } : { id: wanted }
     },
     async mount(agentCtx, id) {
       mounted.push({ id, scoped: agentCtx !== undefined })
       return undefined
-    },
-    async standingKeyFor(id) {
-      return `standing:${id ?? defaultId}`
     },
   }
   return { presets, mounted, resolved }
@@ -968,23 +983,71 @@ export function createFakeTools(
   return { service, views }
 }
 
-/** An in-memory `settings` service: one namespace layering base under `stored`. */
-export function createFakeSettings(stored: Record<string, unknown> = {}) {
-  const updates: object[] = []
-  const registered: { ns: string; base: unknown }[] = []
-  const settings: HostSettings = {
-    register(ns, _schema, options) {
-      registered.push({ ns, base: options?.base })
+/**
+ * An in-memory `storageDomain`: one domain per name, over records a test seeds
+ * and reads back.
+ *
+ * The fake sits at the domain boundary rather than at the plugin's own store,
+ * so a test exercises the production writer — spec, table names, global
+ * rewrite and all — instead of a stub of it. `tables` and `globals` are the
+ * durable shapes as the medium would hold them.
+ */
+export function createFakeStorage(stored: Partial<ChannelState> = {}) {
+  const opened: string[] = []
+  const globals: Record<string, string>[] = []
+  const tables = new Map<string, Map<string, string>>()
+  for (const table of Object.values(STATE_TABLES)) tables.set(table, new Map())
+  for (const [field, table] of Object.entries(STATE_TABLES)) {
+    const seed = (stored as Record<string, unknown>)[field]
+    if (typeof seed === 'object' && seed !== null) {
+      for (const [key, value] of Object.entries(seed)) {
+        if (typeof value === 'string') tables.get(table)!.set(key, value)
+      }
+    }
+  }
+  let global: Record<string, string> = {}
+  for (const field of ['appId', 'appSecretRef', 'appSecret', 'registeredBy'] as const) {
+    const value = stored[field]
+    if (typeof value === 'string' && value !== '') global[field] = value
+  }
+  const state = { failOpen: false }
+  const storage = {
+    async open(spec: { name: string }) {
+      if (state.failOpen) throw new Error('no storage backend is routed for this domain (fake)')
+      opened.push(spec.name)
       return {
-        get: () => ({ ...(options?.base as Record<string, unknown>), ...stored }),
-        update: async (patch) => {
-          updates.push(patch)
-          Object.assign(stored, patch)
+        global: {
+          get: () => ({ ...global }),
+          set: async (value: unknown) => {
+            global = { ...(value as Record<string, string>) }
+            globals.push({ ...global })
+          },
         },
+        table: (name: string) => {
+          const records = tables.get(name)
+          if (records === undefined) throw new Error(`domain has no table "${name}" (fake)`)
+          return {
+            get: (key: string) => records.get(key),
+            keys: () => records.keys(),
+            put: async (key: string, value: unknown) => { records.set(key, String(value)) },
+            delete: async (key: string) => records.delete(key),
+          }
+        },
+        close: async () => undefined,
       }
     },
   }
-  return { settings, updates, registered }
+  return {
+    storage,
+    opened,
+    globals,
+    tables,
+    /** The global record as it now stands. */
+    global: () => ({ ...global }),
+    /** One table's records as they now stand. */
+    table: (name: string) => Object.fromEntries(tables.get(name) ?? []),
+    state,
+  }
 }
 
 /** One node of a card, as the tests need to see it. */

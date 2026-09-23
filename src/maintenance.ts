@@ -16,7 +16,7 @@
  * here is: ask the agent for the phase, and let it say when. What this module
  * adds is one queue per conversation, so two clicks are two turns of the queue
  * rather than two writers.
- * @module dsh-lark-channel/maintenance
+ * @module @nextnowlabs/dsh-lark/maintenance
  */
 
 import type { HostAgent } from './host.ts'

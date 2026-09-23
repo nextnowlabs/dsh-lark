@@ -8,7 +8,7 @@
  * the canonical form of what the filesystem actually holds — outbound before it
  * takes bytes out of a workspace (ADR 0004), inbound before it puts bytes into
  * a directory it just made.
- * @module dsh-lark-channel/containment
+ * @module @nextnowlabs/dsh-lark/containment
  */
 
 import { realpathSync } from 'node:fs'

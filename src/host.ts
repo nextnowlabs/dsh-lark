@@ -3,23 +3,29 @@
  * consumes. Keeping these structural copies (instead of importing host source
  * packages) lets the package build self-contained; a composed DSH profile
  * supplies the real implementations at runtime. Field shapes mirror
- * `@deepseek-ai/dsh-agent`, `@deepseek-ai/dsh-session`, and
- * `@deepseek-ai/dsh-user-approval` as of dsh 0.0.1-rc.2.
- * @module dsh-lark-channel/host
+ * `@deepseek-ai/dsh-agent`, `@deepseek-ai/dsh-session`,
+ * `@deepseek-ai/dsh-user-approval`, and `@deepseek-ai/dsh-storage-domain` as of
+ * dsh 0.1.7-alpha.2.
+ *
+ * Each interface is a SUBSET of the host's own type: a field this plugin never
+ * reads is left out rather than mirrored, which keeps a host addition from
+ * forcing an edit here. A field the plugin does read is mirrored exactly.
+ * @module @nextnowlabs/dsh-lark/host
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 
-/** The live session a host agent drives; only the identity is read here. */
+/**
+ * The live session a host agent drives; only the identity is read here.
+ *
+ * There is deliberately no `events` member: dsh 0.1.7 dropped the session's
+ * raw event array (`snapshotEvents()` is the deprecated stand-in), and every
+ * state this plugin used to fold from it now comes from the service that owns
+ * it — plan mode from {@link HostPlanModeRead.get}, not from the log.
+ */
 export interface HostSession {
   /** The session id shared by the agent registry and session log. */
   readonly id: string
-  /**
-   * The session log, which several host services fold their own state out of
-   * rather than mirroring it. Read-only here: this plugin folds plan mode from
-   * it to know whether a plan review is even meaningful.
-   */
-  readonly events?: readonly HostSessionEvent[]
 }
 
 /** Durable metadata for one stored image, from {@link HostAttachments.saveImage}. */
@@ -67,6 +73,14 @@ export interface HostAttachments {
   saveImage(input: { data: Uint8Array; mediaType: string; name?: string }): Promise<HostImageRef>
 }
 
+/** One pickable preset, as the process-level catalog describes it. */
+export interface HostPresetOption {
+  /** The preset name a switch is addressed by. */
+  readonly value: string
+  readonly name?: string
+  readonly description?: string
+}
+
 /**
  * The deployment's permission presets (subset of the host `permissionPresets`
  * service). Read-only here: this channel classifies a switch by what the
@@ -85,6 +99,14 @@ export interface HostPermissionPresets {
     readonly name?: string | undefined
     readonly description?: string | undefined
   }
+  /**
+   * The whole table, with the labels a picker shows.
+   *
+   * This — not the session's `permissions` projection — is where the choices
+   * live: since dsh 0.1.7 that projection carries only `currentValue`, so a
+   * picker built from it offers nothing at all.
+   */
+  catalog(): { readonly options: readonly HostPresetOption[]; readonly defaultPreset?: string }
 }
 
 /**
@@ -110,6 +132,11 @@ export interface HostSessionRecord {
   }
   /** Whether an agent currently drives this id. */
   readonly live?: boolean
+  /**
+   * Whether any medium still holds this session. The host lists a few ids it
+   * knows only from memory, and continuing one of those cannot work.
+   */
+  readonly persisted?: boolean
 }
 
 /** One event of a session, as the query engine's lightweight listing gives it. */
@@ -183,8 +210,13 @@ export interface HostAgent {
   /**
    * Clear queued work and abort the active turn. A no-op when nothing is
    * active, so a chat may offer it unconditionally.
+   *
+   * The cause is a DISCRIMINATED OBJECT, not a label: dsh 0.1.7 narrows the
+   * reason into the durable `turn/end` record, and a bare string reaches the
+   * loop's exhaustive switch as an unrecognized variant and throws there —
+   * which loses the turn's own ending rather than merely mislabelling it.
    */
-  cancel(cause: string): void
+  cancel(cause: HostAgentCancelCause, options?: { readonly keepInbox?: boolean }): void
   /**
    * Resolve once the agent has no driver or maintenance task running.
    * Optional here because the contract reaches this plugin as an object rather
@@ -202,6 +234,16 @@ export interface HostAgent {
    */
   runMaintenance?<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>
 }
+
+/**
+ * Why a turn was cancelled, as the host's own closed union. A `hook` cause
+ * carries the reason the hook named; the rest are one-shot labels.
+ */
+export type HostAgentCancelCause =
+  | { readonly kind: 'user' }
+  | { readonly kind: 'parent' }
+  | { readonly kind: 'hook'; readonly reason: string }
+  | { readonly kind: 'disposed' }
 
 /** An owned agent plus its teardown capability, from `agents.create()`. */
 export interface HostAgentHandle {
@@ -222,12 +264,19 @@ export interface HostSessionHeader {
   readonly createdAt: number
 }
 
+/** One snapshot the persistence provider lists (subset of `SessionPersistenceSnapshot`). */
+export interface HostSessionSnapshot {
+  readonly header: HostSessionHeader
+}
+
 /**
  * The `sessionPersistence` store (subset of the host provider). Only headers
  * are read: enough to find a chat's previous session without loading any log.
+ * Since dsh 0.1.7 the listing takes an options object and answers with one
+ * snapshot per session, the header one level down.
  */
 export interface HostSessionPersistence {
-  list(signal?: AbortSignal): Promise<readonly HostSessionHeader[]>
+  list(options?: { readonly signal?: AbortSignal }): Promise<readonly HostSessionSnapshot[]>
 }
 
 /** The `agents` registry service (subset of the host `AgentRegistry`). */
@@ -236,7 +285,7 @@ export interface HostAgentRegistry {
   resume(options: {
     readonly resumeSessionId: string
     readonly agentOptions?: HostAgentOptions
-    readonly setup?: (agentCtx: Context) => Promise<void>
+    readonly setup?: HostAgentSetup
   }): Promise<HostAgentHandle>
   create(options: {
     readonly sessionId: string
@@ -247,9 +296,22 @@ export interface HostAgentRegistry {
      * the session and agent are published. A rejection rolls the whole
      * creation back, so a broken composition never yields a half-built session.
      */
-    readonly setup?: (agentCtx: Context) => Promise<void>
+    readonly setup?: HostAgentSetup
   }): Promise<HostAgentHandle>
 }
+
+/**
+ * Compose one unpublished agent's scoped world, its session and agent not yet
+ * published.
+ *
+ * The agent is handed in as well as its context, and that is what makes a
+ * per-agent view readable from a composition that resolved BEFORE any agent
+ * existed: the callback runs once per agent, at the one moment the two are
+ * both in hand.
+ * @param agentCtx - the unpublished agent's scope.
+ * @param agent - the unpublished agent itself.
+ */
+export type HostAgentSetup = (agentCtx: Context, agent: HostAgent) => Promise<void>
 
 /**
  * The `tools` registry, as this plugin's per-agent composition uses it
@@ -269,15 +331,22 @@ export interface HostTools {
    * reserves exactly one name from shadowing (`run_code`), which makes
    * overriding any other an intended capability rather than a trick.
    *
+   * Since dsh 0.1.7 a definition must also declare `output`
+   * (`{ schema, render, presentationMeta? }`); the registry enforces it at
+   * registration. This contract leaves the definition opaque, so each of this
+   * plugin's own tools states its `output` at its own declaration site.
+   *
    * Optional in this narrow contract so a deployment composing a registry
    * without it still boots; questions then fall back to being denied.
    */
   register?(definition: object): () => void
   /**
    * One visible tool definition in a viewing scope. The scope is an opaque
-   * `ScopeKey`; omitted views the global layer, which a deployment with a
-   * preset roster leaves empty ({@link HostAgentPresets.standingKeyFor} supplies
-   * the roster's).
+   * `ScopeKey`, and the one the host's own presenters pass is THE AGENT: the
+   * agent's scope is parented to its preset's standing scope, so reading
+   * through the agent sees strictly more than reading through the roster's
+   * standing key alone. Omitted views the global layer, which a deployment
+   * with a preset roster leaves empty.
    */
   get(name: string, scope?: unknown): HostToolDefinition | undefined
 }
@@ -285,10 +354,9 @@ export interface HostTools {
 /** The presentation half of a tool definition (subset of the host `ToolDefinition`). */
 export interface HostToolDefinition {
   /**
-   * Pure projection of one pending call for a UI. Every view variant carries a
-   * `title`: a short, always-visible label describing what THIS call does,
-   * which is what a log line or card header shows. Absent on tools that accept
-   * the generic fallback (title = tool name).
+   * Pure projection of one pending call for a UI. Every variant of the host's
+   * tool-call view carries a `title`; `kind` exists only on its generic
+   * variant, so a terminal or diff view simply states no icon.
    */
   presentCall?(args: unknown): { readonly title?: string; readonly kind?: string } | undefined
 }
@@ -303,6 +371,7 @@ export interface HostCommandDescriptor {
 
 /** One settled command execution (subset of the host `CommandExecution`). */
 export interface HostCommandExecution {
+  /** The host also stamps a `commandId`; nothing here reads it. */
   readonly result:
     | { readonly kind: 'success'; readonly text?: string }
     | { readonly kind: 'error'; readonly text: string }
@@ -315,22 +384,47 @@ export interface HostCommandExecution {
  */
 export interface HostCommands {
   /** Commands available to one agent, for discovery. */
-  list(agent: HostAgent): readonly HostCommandDescriptor[]
+  readonly list: (agent: HostAgent) => readonly HostCommandDescriptor[]
   /**
    * Run one complete slash-command line. Resolves `undefined` when the syntax
    * or the name does not resolve, which is what distinguishes an unknown
    * command from one that ran and failed.
+   *
+   * `submittedAttachments` is the wire uploads accompanying the line; a chat
+   * command carries none — a file sent to the chat lands in the workspace and
+   * reaches the model as a path — so this passes an empty list every time.
+   * The parameter is NOT optional: since dsh 0.1.7 it sits between the line
+   * and the signal, and a three-argument call hands the signal to the wrong
+   * parameter and leaves the real one undefined.
    */
-  execute(agent: HostAgent, line: string, signal: AbortSignal): Promise<HostCommandExecution | undefined>
+  readonly execute: (
+    agent: HostAgent,
+    line: string,
+    submittedAttachments: readonly unknown[],
+    signal: AbortSignal,
+  ) => Promise<HostCommandExecution | undefined>
 }
 
 /** The `systemPrompt` assembler, as this plugin's per-agent composition uses it. */
 export interface HostSystemPrompt {
   /**
    * Register one ordered prompt section in the calling context's scope layer.
-   * Tool guidance uses orders 100–199; a duplicate name throws.
+   * A scoped section SHADOWS a global one of the same name; only two sections
+   * within one layer collide. This plugin registers agent-scoped only, so it
+   * neither collides with nor hides a deployment's own sections.
    */
   section(section: { name: string; order: number; text: string }): () => void
+}
+
+/** One declared preset's metadata (subset of the host `AgentPreset`). */
+export interface HostAgentPreset {
+  readonly id: string
+  /**
+   * Why the preset could not be composed, when it could not. Resolving one
+   * succeeds either way, so a caller that only reads {@link id} learns of the
+   * failure later than it could — and as an opaque refusal from `mount`.
+   */
+  readonly broken?: string
 }
 
 /**
@@ -341,21 +435,17 @@ export interface HostSystemPrompt {
  */
 export interface HostAgentPresets {
   /**
-   * Resolve a preset id, or the roster default when absent.
+   * Resolve a preset id, or the roster default when absent. Metadata only:
+   * since dsh 0.1.7 a preset that failed to compose still resolves, carrying
+   * its failure in {@link HostAgentPreset.broken}, and `mount` is what refuses.
    * @throws when the roster supplies no such preset.
    */
-  resolve(id?: string): Promise<{ readonly id: string }>
+  resolve(id?: string): Promise<HostAgentPreset>
   /**
    * Join one agent's scope to a preset's standing composition. Call from the
    * agent factory's `setup(agentCtx)`.
    */
   mount(agentCtx: Context, id?: string): Promise<unknown>
-  /**
-   * The standing scope key a reader with no agent resolves this preset's
-   * registrations in — the view that holds its tools, since a roster keeps
-   * every model-facing row off the global layer.
-   */
-  standingKeyFor(id?: string): Promise<unknown>
 }
 
 /** One workspace record (subset of the host `Workspace` entity). */
@@ -428,21 +518,54 @@ export interface HostLoader {
   await(): Promise<unknown>
 }
 
-/** One registered namespace's owner scope (subset of the host `SettingsScope`). */
-export interface HostSettingsScope {
-  /** The resolved value: schema defaults, then composition base, then the user document. */
-  get(): unknown
-  /** Deep-merge a patch into the user section and persist it through the provider. */
-  update(patch: object): Promise<unknown>
+/**
+ * One record table of an opened domain (subset of the host `KvTable`). Reads
+ * are synchronous out of the domain's authoritative memory; every write
+ * resolves only after the medium holds it, so `true` from a write here means
+ * the value survives a restart.
+ */
+export interface HostDomainTable {
+  get(key: string): unknown
+  keys(): IterableIterator<string>
+  put(key: string, value: unknown): Promise<void>
+  delete(key: string): Promise<boolean>
 }
 
-/** The `settings` user-settings service (subset of `SettingsProvider`). */
-export interface HostSettings {
+/** One opened state domain (subset of the host `Domain`). */
+export interface HostStateDomain {
+  /** The global singleton slot; its spec's `initial` until the first write. */
+  readonly global: {
+    get(): unknown
+    set(value: unknown): Promise<void>
+  }
+  table(name: string): HostDomainTable
   /**
-   * Register a namespace schema; the registration is an effect on the calling
-   * fiber. Duplicate namespaces and stored sections the schema rejects fail loud.
+   * Release the domain and its backend unit. The consumer owns this call —
+   * register it as an effect disposer — and a closed domain rejects further
+   * writes rather than silently dropping them.
    */
-  register(ns: string, schema: unknown, options?: { base?: unknown }): HostSettingsScope
+  close(): Promise<void>
+}
+
+/**
+ * The `storageDomain` data form (subset of the host `DomainFacility`).
+ *
+ * This is where dsh 0.1.7 keeps durable, non-session plugin state. It replaces
+ * the settings-provider seam this plugin used to write per-conversation state
+ * through: `ctx.settings` is now a form surface over the profile row's own
+ * `config`, and a row's config belongs to whoever edits the profile patch, not
+ * to the bot writing a `/cd` switch into it.
+ *
+ * The spec passed to {@link open} is declared by this plugin; a backend that
+ * cannot serve the routed domain refuses the open, which is why every caller
+ * here treats a failed open as "state is memory-only" rather than as fatal.
+ *
+ * Read through a cast rather than declared on `Context`: this is an OPTIONAL
+ * seam — a deployment may compose no storage at all — and a declaration here
+ * would merge with the host package's own, which requires it.
+ */
+export interface HostStorageDomain {
+  open(spec: object): Promise<HostStateDomain>
 }
 
 /**
@@ -501,6 +624,11 @@ export interface AssistantMessageData {
 /** The `turn/end` payload fields this plugin reports. */
 export interface TurnEndData {
   readonly turn: number
+  /**
+   * How the turn closed. The host's own union also carries `aborted`,
+   * `blocked`, `max-tokens`, `interrupted`, and `forked`; only `error` names a
+   * failure, and every other kind closes the turn as an ordinary ending.
+   */
   readonly reason: {
     readonly kind: string
     readonly error?: { readonly code?: string; readonly message?: string }
@@ -539,18 +667,49 @@ export interface AssistantChunkData {
   readonly chunk: { readonly type: string; readonly text?: string }
 }
 
+/**
+ * One live assistant-stream publication (subset of the host
+ * `AssistantStreamFrame` union). A `chunk` frame names its ATTEMPT rather than
+ * its turn, so a reader pairs it with the `start` frame carrying the same
+ * `attemptId` — which is why {@link assistantStreamChunk} is fed the turn the
+ * caller remembered.
+ */
+export type HostAssistantStreamFrame =
+  | {
+      readonly type: 'start'
+      readonly attemptId: string
+      readonly revision: number
+      readonly turn: number
+      readonly step: number
+    }
+  | {
+      readonly type: 'chunk'
+      readonly attemptId: string
+      readonly revision: number
+      /** Dense zero-based position within the attempt. */
+      readonly index: number
+      /** Safe-integer timestamp, reused by the durable embedded stream. */
+      readonly time: number
+      readonly chunk: { readonly type: string; readonly text?: string }
+    }
+  | { readonly type: 'end'; readonly attemptId: string; readonly revision: number; readonly index: number }
+
 /** The `tool/result` payload fields a thinking process reports. */
 export interface ToolResultData {
   readonly turn: number
+  /**
+   * The completed result message. Its content blocks are FLAT: the released
+   * shape this plugin used to read nested a `tool-result` wrapper carrying the
+   * text, and session format v4 refuses that wrapper outright, so reading it
+   * now yields an empty body for every call. The call id sits on the message
+   * and on its source, not on a block.
+   */
   readonly message: {
     /** The producing call, so a result pairs with the call that asked. */
-    readonly source?: { readonly callId?: string }
-    readonly content: readonly {
-      readonly type: string
-      readonly toolCallId?: string
-      /** Nested model-facing blocks; a tool's text output lives here. */
-      readonly content?: readonly { readonly type: string; readonly text?: string }[]
-    }[]
+    readonly source?: { readonly kind?: string; readonly callId?: string }
+    readonly toolCallId?: string
+    /** Model-facing blocks; a tool's text output is a top-level `text` block. */
+    readonly content: readonly { readonly type: string; readonly text?: string }[]
   }
   readonly error?: { readonly name: string; readonly code: string }
 }
@@ -622,6 +781,11 @@ export function isUserMessageEvent(
 
 /**
  * Narrow a session event to one raw assistant stream chunk.
+ *
+ * The record is this plugin's own: dsh 0.1.7 no longer publishes an
+ * `assistant/chunk` SESSION event, and this bridge normalizes the live
+ * `agent/assistant-stream` frames onto the same shape (
+ * {@link assistantStreamChunk}) so both renderers keep reading one contract.
  * @param event - any session event.
  * @returns whether `event.data` carries {@link AssistantChunkData}.
  */
@@ -648,12 +812,29 @@ export function isToolResultEvent(
  * @returns the call id and its joined text output.
  */
 export function toolResultText(data: ToolResultData): { callId: string | undefined; text: string } {
-  const block = data.message.content[0]
-  const text = (block?.content ?? [])
-    .filter(inner => inner.type === 'text' && inner.text !== undefined)
-    .map(inner => inner.text)
+  const text = data.message.content
+    .filter(block => block.type === 'text' && block.text !== undefined)
+    .map(block => block.text)
     .join('')
-  return { callId: block?.toolCallId ?? data.message.source?.callId, text }
+  return { callId: data.message.toolCallId ?? data.message.source?.callId, text }
+}
+
+/**
+ * Normalize one live stream frame into the record this plugin's renderers
+ * consume — the shape the host published as an `assistant/chunk` SESSION event
+ * until dsh 0.1.7 removed it.
+ *
+ * The frame carries no turn of its own, so the caller supplies the one it
+ * remembered for this attempt. That pairing is the whole reason this lives
+ * here rather than at each renderer: two renderers must not disagree about
+ * which turn a delta belongs to.
+ * @param frame - one live frame, as the host published it.
+ * @param turn - the turn the frame's attempt was started for.
+ * @returns the normalized chunk record, or undefined for a non-chunk frame.
+ */
+export function assistantStreamChunk(frame: HostAssistantStreamFrame, turn: number): HostSessionEvent | undefined {
+  if (frame.type !== 'chunk') return undefined
+  return { type: 'assistant/chunk', data: { turn, chunk: frame.chunk } satisfies AssistantChunkData }
 }
 
 /**
@@ -724,7 +905,21 @@ declare module '@deepseek-ai/cordis' {
     'agent/inbox/claimed'(payload: {
       readonly agent: HostAgent
       readonly message: { readonly id?: string }
-      readonly turn?: number
+      readonly turn: number
+    }): void
+    /**
+     * One live assistant-stream publication, process-local and transient: the
+     * host appends a matching `assistant/message` (or `assistant/attempt`)
+     * carrying the whole stream before the closing frame. This is what a
+     * typewriter card and a reasoning stream are built from now that the
+     * `assistant/chunk` session event is gone.
+     *
+     * A `chunk` frame names an attempt, not a turn, so a reader pairs it with
+     * the `start` frame of the same attempt.
+     */
+    'agent/assistant-stream'(payload: {
+      readonly agent: HostAgent
+      readonly frame: HostAssistantStreamFrame
     }): void
     /** Waterfall permission question; answer only for owned agents, else delegate via `next()`. */
     'approval/request'(

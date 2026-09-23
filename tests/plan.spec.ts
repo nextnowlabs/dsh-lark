@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { firstHeading, PLAN_TOOL, planModeActive, planReviewQuestion, shadowPlanTool } from '../src/plan.ts'
 import type { PlanReviewPorts } from '../src/plan.ts'
+import type { HostAgent } from '../src/host.ts'
 import { assertRegistrableTool } from './harness.ts'
 
 /** The tool as the registry hands it back, with the one method tests drive. */
@@ -9,15 +10,15 @@ interface Runnable {
   execute(args: unknown, exec: unknown): Promise<{ approved: true }>
 }
 
-/** One agent, in plan mode unless a test says otherwise. */
-function fakeAgent(events: { type: string; data: unknown }[] = [{ type: 'plan/mode', data: { active: true } }]) {
-  return { id: 's1', session: { id: 's1', events }, followup: () => {}, cancel: () => {} }
+/** One agent; the plan service is what says whether a review is meaningful. */
+function fakeAgent(): HostAgent {
+  return { id: 's1', session: { id: 's1' }, followup: () => {}, cancel: () => {} } as unknown as HostAgent
 }
 
 /** Ports recording what the review published and how it was answered. */
 function createPorts(
   answer: { selected: string[]; custom?: string },
-  options: { planMode?: boolean } = {},
+  options: { planMode?: boolean; active?: boolean } = {},
 ) {
   const published: string[] = []
   const headings: (string | undefined)[] = []
@@ -30,7 +31,10 @@ function createPorts(
     },
     planMode: () => options.planMode === false
       ? undefined
-      : { set: (_agent, active) => { switched.push(active); return 'queued' } },
+      : {
+          set: (_agent, active) => { switched.push(active); return 'queued' },
+          get: () => ({ active: options.active ?? true }),
+        },
   }
   return { ports, published, headings, switched }
 }
@@ -39,14 +43,22 @@ function createPorts(
 const PLAN = '# 迁移计划\n\n1. 跑测试\n2. 发预发'
 
 describe('plan review', () => {
-  it('reads plan mode off the session log, last one wins', () => {
-    expect(planModeActive([])).toBe(false)
-    expect(planModeActive([{ type: 'plan/mode', data: { active: true } }])).toBe(true)
-    expect(planModeActive([
-      { type: 'plan/mode', data: { active: true } },
-      { type: 'turn/start', data: {} },
-      { type: 'plan/mode', data: { active: false } },
-    ])).toBe(false)
+  it('reads plan mode from the service that owns it', () => {
+    const agent = fakeAgent()
+    const reads: { active: boolean }[] = []
+    const service = {
+      set: () => 'queued' as const,
+      get: () => reads[reads.length - 1] ?? { active: false },
+    }
+    reads.push({ active: false })
+    expect(planModeActive(service, agent)).toBe(false)
+    reads.push({ active: true })
+    expect(planModeActive(service, agent)).toBe(true)
+    // A service that cannot answer, and a deployment that composed none, both
+    // read as "in plan mode": refusing a review the host would have run is the
+    // failure this guard exists to prevent.
+    expect(planModeActive({ set: () => 'queued', get: () => { throw new Error('no state') } }, agent)).toBe(true)
+    expect(planModeActive(undefined, agent)).toBe(true)
   })
 
   it('titles the card with the plan\'s own heading', () => {
@@ -95,9 +107,9 @@ describe('plan review', () => {
   })
 
   it('refuses before it publishes anything the chat would have to read', async () => {
-    const outside = createPorts({ selected: ['批准，开始执行'] })
+    const outside = createPorts({ selected: ['批准，开始执行'] }, { active: false })
     await expect((shadowPlanTool(outside.ports) as Runnable)
-      .execute({ plan: PLAN }, { agent: fakeAgent([{ type: 'plan/mode', data: { active: false } }]) }))
+      .execute({ plan: PLAN }, { agent: fakeAgent() }))
       .rejects.toThrow('only available in plan mode')
 
     const headless = createPorts({ selected: ['批准，开始执行'] })
@@ -114,10 +126,14 @@ describe('plan review', () => {
     expect([...outside.published, ...headless.published, ...noService.published]).toEqual([])
   })
 
-  it('reviews anyway when the registry is too old to expose the session log', async () => {
+  it('reviews anyway when the plan service cannot report its own state', async () => {
     const { ports, switched } = createPorts({ selected: ['批准，开始执行'] })
-    const agent = { id: 's1', session: { id: 's1' }, followup: () => {}, cancel: () => {} }
-    expect(await (shadowPlanTool(ports) as Runnable).execute({ plan: PLAN }, { agent })).toEqual({ approved: true })
+    const unreadable: PlanReviewPorts = {
+      ...ports,
+      planMode: () => ({ set: (_agent, active) => { switched.push(active); return 'queued' }, get: () => { throw new Error('no state') } }),
+    }
+    expect(await (shadowPlanTool(unreadable) as Runnable).execute({ plan: PLAN }, { agent: fakeAgent() }))
+      .toEqual({ approved: true })
     expect(switched).toEqual([false])
   })
 })

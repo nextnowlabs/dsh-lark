@@ -25,7 +25,7 @@ import {
   createFakePermissionPresets,
   createFakePresets,
   createFakeSessionQuery,
-  createFakeSettings,
+  createFakeStorage,
   createFakeTools,
   createFakeWorkspaces,
   fakeMessage,
@@ -81,7 +81,7 @@ function clickAction(
   }
 }
 
-describe('dsh-lark-channel', () => {
+describe('dsh-lark', () => {
   it('preserves the function-plugin namespace through Loader unwrapping', () => {
     expect('default' in plugin).toBe(false)
 
@@ -432,6 +432,21 @@ describe('dsh-lark-channel', () => {
       await harness.dispose()
     })
 
+    it('refuses a preset the roster could not compose, in the roster\'s own words', async () => {
+      // Resolving a preset succeeds even when its rows failed to activate, and
+      // the failure rides along as metadata. Left to `mount`, that reaches the
+      // chat a rung later as an opaque refusal naming nothing.
+      const roster = createFakePresets(['default', 'reviewer'], 'default', ['reviewer'])
+      const harness = await mountChannel({ preset: 'reviewer' }, { presets: roster.presets })
+      await harness.fake.emitMessage(fakeMessage())
+      await vi.waitFor(() => { expect(harness.fake.sent).toHaveLength(1) })
+      const input = harness.fake.sent[0]!.input
+      expect('text' in input && input.text.includes('could not be composed')).toBe(true)
+      expect('text' in input && input.text.includes('its row failed to activate')).toBe(true)
+      expect(harness.agents.created).toHaveLength(0)
+      await harness.dispose()
+    })
+
     it('shadows the question tool and denies only what it cannot answer here', async () => {
       const harness = await mountChannel()
       const created = await firstAgent(harness)
@@ -454,7 +469,7 @@ describe('dsh-lark-channel', () => {
     })
 
     it('shadows the plan tool where a plan service exists to leave plan mode', async () => {
-      const harness = await mountChannel({}, { planMode: { set: () => 'queued' } })
+      const harness = await mountChannel({}, { planMode: { set: () => 'queued', get: () => ({ active: true }) } })
       const created = await firstAgent(harness)
       expect(created.registeredTools.map((tool) => tool.name)).toContain('exit_plan_mode')
       expect(created.denyReason('exit_plan_mode')).toBeUndefined()
@@ -1419,8 +1434,13 @@ describe('dsh-lark-channel', () => {
       const created = harness.agents.created[0]!
 
       await harness.fake.emitMessage(fakeMessage({ content: '/stop' }))
-      // Cancellation is an agent method, not a registered command.
+      // Cancellation is an agent method, not a registered command — and the
+      // cause is a discriminated object, which is the shape the host folds
+      // into the durable turn/end record. A bare label reaches its exhaustive
+      // switch as an unrecognized variant and throws there, losing the turn's
+      // own ending rather than merely mislabelling it.
       await vi.waitFor(() => { expect(created.agent.cancel).toHaveBeenCalledTimes(1) })
+      expect(created.agent.cancel).toHaveBeenCalledWith({ kind: 'user' })
       expect(created.agent.followup).toHaveBeenCalledTimes(1)
       await vi.waitFor(() => {
         expect(harness.fake.sent.some((m) => 'markdown' in m.input && m.input.markdown.includes('已停止'))).toBe(true)
@@ -1654,6 +1674,78 @@ describe('dsh-lark-channel', () => {
       return (type: string, data: unknown) => { harness.ctx.emit('session/event', session, { type, data }) }
     }
 
+    /**
+     * Bind one chat and return an emitter for the LIVE stream publication —
+     * `agent/assistant-stream`, which is where deltas come from since dsh
+     * 0.1.7 removed the `assistant/chunk` session event.
+     */
+    async function liveStream(harness: Awaited<ReturnType<typeof mountChannel>>) {
+      await harness.fake.emitMessage(fakeMessage())
+      await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
+      const agent = harness.agents.created[0]!.agent
+      return {
+        agent,
+        start: (attemptId: string, turn: number) => {
+          harness.ctx.emit('agent/assistant-stream', {
+            agent,
+            frame: { type: 'start', attemptId, revision: 1, turn, step: 1 },
+          })
+        },
+        chunk: (attemptId: string, chunk: { readonly type: string; readonly text: string }) => {
+          harness.ctx.emit('agent/assistant-stream', {
+            agent,
+            frame: { type: 'chunk', attemptId, revision: 1, index: 0, time: 1, chunk },
+          })
+        },
+      }
+    }
+
+    it('types live deltas into the card from the stream publication', async () => {
+      const harness = await mountChannel({ output: 'stream' })
+      const live = await liveStream(harness)
+      live.start('a1', 1)
+      live.chunk('a1', { type: 'reasoning-delta', text: '（内心）' })
+      live.chunk('a1', { type: 'text-delta', text: '你' })
+      live.chunk('a1', { type: 'text-delta', text: '好' })
+
+      await vi.waitFor(() => { expect(harness.fake.streams).toHaveLength(1) })
+      await vi.waitFor(() => { expect(harness.fake.streams[0]!.content).toBe('你好') })
+      // Reasoning streams into the process, never into the chat.
+      expect(harness.fake.streams[0]!.content).not.toContain('内心')
+      await harness.dispose()
+    })
+
+    it('pairs a delta with the turn its own attempt opened', async () => {
+      // A chunk frame names an attempt and not a turn, so a bridge that
+      // guessed would type one turn's words into another turn's card.
+      const harness = await mountChannel({ output: 'stream' })
+      const live = await liveStream(harness)
+      live.start('a1', 1)
+      live.start('a2', 2)
+      live.chunk('a2', { type: 'text-delta', text: '第二轮的' })
+      live.chunk('a1', { type: 'text-delta', text: '第一轮的' })
+
+      await vi.waitFor(() => { expect(harness.fake.streams).toHaveLength(2) })
+      // One card per turn, each carrying only its own turn's words. A bridge
+      // that paired a delta with the most recently opened attempt instead
+      // would type both into one card.
+      const contents = harness.fake.streams.map(stream => stream.content)
+      expect(contents.filter(text => text === '第一轮的')).toHaveLength(1)
+      expect(contents.filter(text => text === '第二轮的')).toHaveLength(1)
+      await harness.dispose()
+    })
+
+    it('drops a delta whose attempt this bridge never saw open', async () => {
+      const harness = await mountChannel({ output: 'stream' })
+      const live = await liveStream(harness)
+      live.chunk('unknown', { type: 'text-delta', text: '无主的一段' })
+      // Nothing is rendered, and nothing is thrown: the attempts this bridge
+      // saw open are the authority on which deltas belong to this chat.
+      expect(harness.fake.streams).toHaveLength(0)
+      expect(harness.notices.some((line) => line.includes('rendering'))).toBe(false)
+      await harness.dispose()
+    })
+
     it('streams text deltas into one card per turn and shows tool activity', async () => {
       const harness = await mountChannel({ output: 'stream' })
       const emit = await streamingChat(harness)
@@ -1694,6 +1786,26 @@ describe('dsh-lark-channel', () => {
       })
       // Ten bare tool names told a reader nothing; this is what each call did.
       expect(harness.fake.streams[0]!.content).not.toContain('🔧 grep\n')
+      await harness.dispose()
+    })
+
+    it('describes a call through the live agent\'s own view', async () => {
+      // The scope is the AGENT, which is what the host's own presenters pass:
+      // an agent's scope is parented to its preset's standing scope, so it is
+      // the widest view a call can be described from. A reader that reached
+      // for the roster's standing key instead would miss the agent's own layer.
+      const tools = createFakeTools({ grep: () => ({ title: 'Search' }) })
+      const harness = await mountChannel({ output: 'stream' }, { tools: tools.service })
+      const live = await liveStream(harness)
+      live.start('a1', 1)
+      live.chunk('a1', { type: 'text-delta', text: 'x' })
+      harness.ctx.emit('session/event', live.agent.session, {
+        type: 'tool/call',
+        data: { turn: 1, callId: 'c1', name: 'grep', arguments: '{}' },
+      })
+
+      await vi.waitFor(() => { expect(harness.fake.streams[0]?.content).toContain('🔧 Search') })
+      expect(tools.views).toContainEqual({ name: 'grep', scope: live.agent })
       await harness.dispose()
     })
 
@@ -2050,20 +2162,20 @@ describe('dsh-lark-channel', () => {
     })
 
     it('keys a named row apart end to end, and leaves an unnamed one alone', async () => {
-      const store = createFakeSettings()
+      const store = createFakeStorage()
       const vault = createFakeCredentials()
       const harness = await mountChannel(
         { instance: 'support', appId: undefined, appSecret: undefined },
         {
-          settings: store.settings,
+          storage: store.storage,
           credentials: vault.credentials,
           registerApp: async () => ({ client_id: 'cli_second', client_secret: 'second-secret' }),
         },
       )
       await vi.waitFor(() => { expect(harness.fake.state.connects).toBe(1) })
 
-      // Its own settings section and its own credential.
-      expect(store.registered[0]!.ns).toBe('lark-channel-support')
+      // Its own state domain and its own credential.
+      expect(store.opened).toEqual(['lark_channel_support'])
       expect(vault.stored).toEqual([{ ref: 'LARK_APP_SECRET_SUPPORT', value: 'second-secret' }])
 
       // And its own session ids: the same chat under two rows is two agents.
@@ -2073,13 +2185,13 @@ describe('dsh-lark-channel', () => {
       await harness.dispose()
     })
 
-    it('stores an onboarded secret behind a credential, not in the settings document', async () => {
-      const store = createFakeSettings()
+    it('stores an onboarded secret behind a credential, not in the state store', async () => {
+      const store = createFakeStorage()
       const vault = createFakeCredentials()
       const harness = await mountChannel(
         { appId: undefined, appSecret: undefined },
         {
-          settings: store.settings,
+          storage: store.storage,
           credentials: vault.credentials,
           registerApp: async () => ({ client_id: 'cli_new', client_secret: 'new-secret' }),
         },
@@ -2087,27 +2199,24 @@ describe('dsh-lark-channel', () => {
       await vi.waitFor(() => { expect(harness.fake.state.connects).toBe(1) })
 
       expect(vault.stored).toEqual([{ ref: 'LARK_APP_SECRET', value: 'new-secret' }])
-      // The settings keep the reference and a blanked secret: a deep-merged
-      // patch cannot delete a key, and an empty secret is an absent one.
-      expect(store.updates).toEqual([
-        { appId: 'cli_new', appSecret: '', appSecretRef: 'LARK_APP_SECRET' },
-      ])
-      expect(JSON.stringify(store.updates)).not.toContain('new-secret')
+      // The store keeps the app and the REFERENCE, never the secret.
+      expect(store.globals).toEqual([{ appId: 'cli_new', appSecretRef: 'LARK_APP_SECRET' }])
+      expect(JSON.stringify(store.globals)).not.toContain('new-secret')
       await harness.dispose()
     })
 
-    it('moves a secret already in the settings document behind a credential', async () => {
-      const store = createFakeSettings({ appId: 'cli_stored', appSecret: 'old-secret' })
+    it('moves a secret already named by the configuration behind a credential', async () => {
+      const store = createFakeStorage()
       const vault = createFakeCredentials()
       const harness = await mountChannel(
-        { appId: undefined, appSecret: undefined },
-        { settings: store.settings, credentials: vault.credentials },
+        { appId: 'cli_stored', appSecret: 'old-secret' },
+        { storage: store.storage, credentials: vault.credentials },
       )
       // Repaired by restarting rather than by scanning again — and the channel
       // still connects on this boot, with the secret it just moved.
       await vi.waitFor(() => { expect(harness.fake.state.connects).toBe(1) })
       expect(vault.stored).toEqual([{ ref: 'LARK_APP_SECRET', value: 'old-secret' }])
-      expect(store.updates).toEqual([{ appSecret: '', appSecretRef: 'LARK_APP_SECRET' }])
+      expect(store.globals).toEqual([{ appSecretRef: 'LARK_APP_SECRET' }])
       expect(harness.portConfigs[0]!.appSecret).toBe('old-secret')
       await harness.dispose()
     })
@@ -2126,11 +2235,11 @@ describe('dsh-lark-channel', () => {
     })
 
     it('reports who registered the app without authorizing on it', async () => {
-      const store = createFakeSettings()
+      const store = createFakeStorage()
       const harness = await mountChannel(
         { appId: undefined, appSecret: undefined },
         {
-          settings: store.settings,
+          storage: store.storage,
           registerApp: async () => ({
             client_id: 'cli_new',
             client_secret: 'new-secret',
@@ -2139,7 +2248,7 @@ describe('dsh-lark-channel', () => {
         },
       )
       await vi.waitFor(() => { expect(harness.fake.state.connects).toBe(1) })
-      expect(store.updates).toEqual([
+      expect(store.globals).toEqual([
         { appId: 'cli_new', appSecret: 'new-secret', registeredBy: 'ou_scanner' },
       ])
       // Recorded for reference; it narrows nothing on its own.
@@ -2290,27 +2399,27 @@ describe('dsh-lark-channel', () => {
       await harness.dispose()
     })
 
-    it('persists scanned credentials through the settings service', async () => {
-      const store = createFakeSettings()
+    it('persists scanned credentials through this channel\'s own state domain', async () => {
+      const store = createFakeStorage()
       const harness = await mountChannel(
         { appId: undefined, appSecret: undefined },
         {
-          settings: store.settings,
+          storage: store.storage,
           registerApp: async () => ({ client_id: 'cli_new', client_secret: 'new-secret' }),
         },
       )
       await vi.waitFor(() => { expect(harness.fake.state.subscriptions).toBe(INBOUND_SUBSCRIPTIONS) })
-      expect(store.registered[0]!.ns).toBe('lark-channel')
-      expect(store.updates).toEqual([{ appId: 'cli_new', appSecret: 'new-secret' }])
+      expect(store.opened).toEqual(['lark_channel'])
+      expect(store.globals).toEqual([{ appId: 'cli_new', appSecret: 'new-secret' }])
       await harness.dispose()
     })
 
-    it('uses credentials stored in settings without re-registering', async () => {
-      const store = createFakeSettings({ appId: 'cli_stored', appSecret: 'stored-secret' })
+    it('uses credentials this channel already stored without re-registering', async () => {
+      const store = createFakeStorage({ appId: 'cli_stored', appSecret: 'stored-secret' })
       const registerApp = vi.fn<RegisterAppPort>()
       const harness = await mountChannel(
         { appId: undefined, appSecret: undefined },
-        { settings: store.settings, registerApp },
+        { storage: store.storage, registerApp },
       )
       await vi.waitFor(() => { expect(harness.fake.state.subscriptions).toBe(INBOUND_SUBSCRIPTIONS) })
       expect(registerApp).not.toHaveBeenCalled()
@@ -2413,9 +2522,8 @@ describe('dsh-lark-channel', () => {
     it('runs /cd end to end: dispose, re-derive, account, persist, and switch back', async () => {
       const target = realpathSync(mkdtempSync(join(tmpdir(), 'ws-target-')))
       const workspaces = createFakeWorkspaces()
-      const stored: Record<string, unknown> = {}
-      const settings = createFakeSettings(stored)
-      const harness = await mountChannel({}, { workspaces: workspaces.service, settings: settings.settings })
+      const store = createFakeStorage()
+      const harness = await mountChannel({}, { workspaces: workspaces.service, storage: store.storage })
       await vi.waitFor(() => { expect(harness.fake.state.subscriptions).toBe(INBOUND_SUBSCRIPTIONS) })
 
       // A first message binds the conversation to the default workspace.
@@ -2428,7 +2536,7 @@ describe('dsh-lark-channel', () => {
       await harness.fake.emitMessage(fakeMessage({ content: `/cd ${target}` }))
       await vi.waitFor(() => { expect(sentText(harness)).toContain('已切换到') })
       expect(original.dispose).toHaveBeenCalledTimes(1)
-      expect(settings.updates).toContainEqual({ chatWorkspaces: { oc_chat_1: target } })
+      expect(store.table('chat_workspaces')).toEqual({ oc_chat_1: target })
 
       // The next message reaches a DIFFERENT durable session, in the new directory.
       await harness.fake.emitMessage(fakeMessage({ content: 'in the new place' }))
@@ -2454,7 +2562,9 @@ describe('dsh-lark-channel', () => {
       const defaultPath = realpathSync(process.cwd())
       await harness.fake.emitMessage(fakeMessage({ content: `/cd ${defaultPath}` }))
       await vi.waitFor(() => { expect(sentText(harness)).toContain('已切回默认工作区') })
-      expect(settings.updates).toContainEqual({ chatWorkspaces: { oc_chat_1: '' } })
+      // Back to the deployment default: recorded as the empty marker, which is
+      // what every reader here treats as "not moved".
+      expect(store.table('chat_workspaces')).toEqual({ oc_chat_1: '' })
       expect(switched.dispose).toHaveBeenCalledTimes(1)
       await harness.fake.emitMessage(fakeMessage({ content: 'back home' }))
       await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(3) })
@@ -2512,9 +2622,8 @@ describe('dsh-lark-channel', () => {
     })
 
     it('switches the model on the SAME session: dispose, resume with new options', async () => {
-      const stored: Record<string, unknown> = {}
-      const settings = createFakeSettings(stored)
-      const harness = await mountChannel({}, { settings: settings.settings })
+      const store = createFakeStorage()
+      const harness = await mountChannel({}, { storage: store.storage })
       await vi.waitFor(() => { expect(harness.fake.state.subscriptions).toBe(INBOUND_SUBSCRIPTIONS) })
 
       await harness.fake.emitMessage(fakeMessage({ content: 'hi' }))
@@ -2527,7 +2636,7 @@ describe('dsh-lark-channel', () => {
       await harness.fake.emitMessage(fakeMessage({ content: '/model use next-provider/next-model' }))
       await vi.waitFor(() => { expect(sentText(harness)).toContain('已切换到 `next-provider/next-model`') })
       expect(original.dispose).toHaveBeenCalledTimes(1)
-      expect(settings.updates).toContainEqual({ chatModels: { oc_chat_1: 'next-provider/next-model' } })
+      expect(store.table('chat_models')).toEqual({ oc_chat_1: 'next-provider/next-model' })
 
       await harness.fake.emitMessage(fakeMessage({ content: 'still me?' }))
       await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(2) })
@@ -2659,7 +2768,7 @@ describe('dsh-lark-channel', () => {
           },
         }),
       }
-      const harness = await mountChannel({}, { commands, sessionProjections })
+      const harness = await mountChannel({}, { commands, sessionProjections, permissionPresets: createFakePermissionPresets() })
       await harness.fake.emitMessage(fakeMessage({ content: 'hello' }))
       await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
 
@@ -2703,10 +2812,10 @@ describe('dsh-lark-channel', () => {
       const sessionProjections = {
         snapshot: () => ({
           asOfSeq: 1,
-          values: { permissions: { currentValue: 'workspace-write', options: [{ value: 'danger-full-access' }] } },
+          values: { permissions: { currentValue: 'workspace-write' } },
         }),
       }
-      const harness = await mountChannel({}, { commands, sessionProjections })
+      const harness = await mountChannel({}, { commands, sessionProjections, permissionPresets: createFakePermissionPresets() })
       await harness.fake.emitMessage(fakeMessage({ content: '/permission' }))
       await vi.waitFor(() => { expect(harness.fake.sent.some((m) => 'card' in m.input)).toBe(true) })
       const card = (harness.fake.sent.filter((m) => 'card' in m.input).at(-1)!.input as { card: object }).card
@@ -2744,10 +2853,10 @@ describe('dsh-lark-channel', () => {
       const sessionProjections = {
         snapshot: () => ({
           asOfSeq: 1,
-          values: { permissions: { currentValue: 'workspace-write', options: [{ value: 'danger-full-access' }] } },
+          values: { permissions: { currentValue: 'workspace-write' } },
         }),
       }
-      const harness = await mountChannel({}, { commands, sessionProjections })
+      const harness = await mountChannel({}, { commands, sessionProjections, permissionPresets: createFakePermissionPresets() })
       await harness.fake.emitMessage(fakeMessage({ content: 'work' }))
       await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
       harness.agents.created[0]!.agent.drive(true)
@@ -2864,7 +2973,7 @@ describe('dsh-lark-channel', () => {
           },
         }),
       }
-      const harness = await mountChannel({}, { commands, sessionProjections })
+      const harness = await mountChannel({}, { commands, sessionProjections, permissionPresets: createFakePermissionPresets() })
       await harness.fake.emitMessage(fakeMessage({ content: '/permission' }))
       await vi.waitFor(() => { expect(harness.fake.sent.some((m) => 'card' in m.input)).toBe(true) })
       const card = (harness.fake.sent.filter((m) => 'card' in m.input).at(-1)!.input as { card: object }).card
@@ -2881,9 +2990,9 @@ describe('dsh-lark-channel', () => {
 
     it('keeps rendering a turn after one event throws inside the renderer', async () => {
       // A shape the renderer does not expect — a tool result whose content is
-      // a string where the contract says a list — used to throw out of the
-      // event dispatch: the chat saw a thinking process open and then go
-      // silent, with nothing anywhere saying why.
+      // a bare string where the contract says a list of blocks — used to throw
+      // out of the event dispatch: the chat saw a thinking process open and
+      // then go silent, with nothing anywhere saying why.
       const harness = await mountChannel({ showProcess: true })
       await harness.fake.emitMessage(fakeMessage({ content: 'look around' }))
       await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
@@ -2897,7 +3006,7 @@ describe('dsh-lark-channel', () => {
       emit('tool/result', {
         turn: 1,
         step: 1,
-        message: { source: { kind: 'tool', callId: 'c1' }, content: [{ type: 'tool-result', toolCallId: 'c1', content: 'not a list' }] },
+        message: { source: { kind: 'tool', callId: 'c1' }, toolCallId: 'c1', content: 'not a list' },
       })
       // The turn carries on, and so does the process.
       emit('assistant/chunk', { turn: 1, chunk: { type: 'reasoning-delta', text: '再想想' } })
@@ -2930,7 +3039,7 @@ describe('dsh-lark-channel', () => {
         sessionProjections: {
           snapshot: () => ({
             asOfSeq: 1,
-            values: { permissions: { currentValue: 'workspace-write', options: [{ value: 'danger-full-access' }] } },
+            values: { permissions: { currentValue: 'workspace-write' } },
           }),
         },
         permissionPresets: createFakePermissionPresets(),
@@ -2964,7 +3073,7 @@ describe('dsh-lark-channel', () => {
       const sessionProjections = {
         snapshot: () => ({
           asOfSeq: 1,
-          values: { permissions: { currentValue: 'workspace-write', options: [{ value: 'danger-full-access' }] } },
+          values: { permissions: { currentValue: 'workspace-write' } },
         }),
       }
       const harness = await mountChannel({}, {
@@ -2997,10 +3106,10 @@ describe('dsh-lark-channel', () => {
       const sessionProjections = {
         snapshot: () => ({
           asOfSeq: 1,
-          values: { permissions: { currentValue: 'workspace-write', options: [{ value: 'danger-full-access' }] } },
+          values: { permissions: { currentValue: 'workspace-write' } },
         }),
       }
-      const harness = await mountChannel({}, { commands, sessionProjections })
+      const harness = await mountChannel({}, { commands, sessionProjections, permissionPresets: createFakePermissionPresets() })
       await harness.fake.emitMessage(fakeMessage({ content: '/permission' }))
       await vi.waitFor(() => { expect(harness.fake.sent.some((m) => 'card' in m.input)).toBe(true) })
       const card = (harness.fake.sent.filter((m) => 'card' in m.input).at(-1)!.input as { card: object }).card
@@ -3026,10 +3135,10 @@ describe('dsh-lark-channel', () => {
       const sessionProjections = {
         snapshot: () => ({
           asOfSeq: 1,
-          values: { permissions: { currentValue: 'workspace-write', options: [{ value: 'danger-full-access' }] } },
+          values: { permissions: { currentValue: 'workspace-write' } },
         }),
       }
-      const harness = await mountChannel({}, { commands, sessionProjections })
+      const harness = await mountChannel({}, { commands, sessionProjections, permissionPresets: createFakePermissionPresets() })
       // A chat that has been through `/new` leaves its earlier session behind
       // in the bridge's tables. A click that resolved the conversation by chat
       // would find that first, dead binding and refuse — beside a
@@ -3070,10 +3179,10 @@ describe('dsh-lark-channel', () => {
       const sessionProjections = {
         snapshot: () => ({
           asOfSeq: 1,
-          values: { permissions: { currentValue: 'workspace-write', options: [{ value: 'danger-full-access' }] } },
+          values: { permissions: { currentValue: 'workspace-write' } },
         }),
       }
-      const harness = await mountChannel({}, { commands, sessionProjections })
+      const harness = await mountChannel({}, { commands, sessionProjections, permissionPresets: createFakePermissionPresets() })
       await harness.fake.emitMessage(fakeMessage({ content: 'hello' }))
       await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
       await harness.fake.emitMessage(fakeMessage({ content: '/permission' }))
@@ -3109,10 +3218,10 @@ describe('dsh-lark-channel', () => {
       const sessionProjections = {
         snapshot: () => ({
           asOfSeq: 1,
-          values: { permissions: { currentValue: 'workspace-write', options: [{ value: 'danger-full-access' }] } },
+          values: { permissions: { currentValue: 'workspace-write' } },
         }),
       }
-      const harness = await mountChannel({}, { commands, sessionProjections })
+      const harness = await mountChannel({}, { commands, sessionProjections, permissionPresets: createFakePermissionPresets() })
       await harness.fake.emitMessage(fakeMessage({ content: '/permission' }))
       await vi.waitFor(() => { expect(harness.fake.sent.some((m) => 'card' in m.input)).toBe(true) })
       const card = (harness.fake.sent.filter((m) => 'card' in m.input).at(-1)!.input as { card: object }).card
@@ -3150,7 +3259,7 @@ describe('dsh-lark-channel', () => {
     })
 
     it('lists what a conversation may continue, and switches on a press', async () => {
-      const store = createFakeSettings()
+      const store = createFakeStorage()
       const { query } = createFakeSessionQuery([
         {
           id: 'session-web-ui',
@@ -3172,7 +3281,7 @@ describe('dsh-lark-channel', () => {
         // alone summarizes a conversation this room was not part of.
         { id: 'lark-oc_other', cwd: process.cwd(), createdAt: Date.now() - 60_000, title: '别人的私聊' },
       ])
-      const harness = await mountChannel({}, { settings: store.settings, sessionQuery: query })
+      const harness = await mountChannel({}, { storage: store.storage, sessionQuery: query })
 
       await harness.fake.emitMessage(fakeMessage({ content: '/sessions' }))
       await vi.waitFor(() => { expect(harness.fake.sent.some((m) => 'card' in m.input)).toBe(true) })
@@ -3535,7 +3644,7 @@ describe('dsh-lark-channel', () => {
       const { query } = createFakeSessionQuery([{ id: 'lark-oc_chat_1', cwd: process.cwd(), createdAt: Date.now() - 10_000 }])
       const harness = await mountChannel({}, { sessionQuery: query })
       const stale = {
-        kind: 'dsh-lark-channel/sessions',
+        kind: 'dsh-lark/sessions',
         session: 'session-from-another-workspace',
         key: 'oc_chat_1',
         chatId: 'oc_chat_1',
@@ -3585,9 +3694,9 @@ describe('dsh-lark-channel', () => {
       await harness.dispose()
     })
 
-    it('runs /new: a fresh session id, the old agent released, settings kept', async () => {
-      const store = createFakeSettings()
-      const harness = await mountChannel({}, { settings: store.settings })
+    it('runs /new: a fresh session id, the old agent released, state kept', async () => {
+      const store = createFakeStorage()
+      const harness = await mountChannel({}, { storage: store.storage })
       await harness.fake.emitMessage(fakeMessage({ content: 'first' }))
       await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
       expect(harness.agents.created[0]!.sessionId).toBe('lark-oc_chat_1')
@@ -3596,7 +3705,7 @@ describe('dsh-lark-channel', () => {
       await vi.waitFor(() => { expect(sentText(harness)).toContain('已开新会话') })
       // No agent is built to answer the command itself.
       expect(harness.agents.created).toHaveLength(1)
-      expect(store.updates).toContainEqual({ chatEpochs: { 'lark-oc_chat_1': '1' } })
+      expect(store.table('chat_epochs')).toEqual({ 'lark-oc_chat_1': '1' })
 
       await harness.fake.emitMessage(fakeMessage({ content: 'second' }))
       await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(2) })
@@ -3864,8 +3973,12 @@ describe('dsh-lark-channel', () => {
 
   it('reviews a plan in the chat: the plan as a message, the decision as a card', async () => {
     const switched: { active: boolean }[] = []
+    let inPlanMode = false
     const harness = await mountChannel({}, {
-      planMode: { set: (_agent: unknown, active: boolean) => { switched.push({ active }); return 'queued' } },
+      planMode: {
+        set: (_agent: unknown, active: boolean) => { switched.push({ active }); return 'queued' },
+        get: () => ({ active: inPlanMode }),
+      },
     })
     await harness.fake.emitMessage(fakeMessage({ content: 'plan the migration' }))
     await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
@@ -3873,8 +3986,8 @@ describe('dsh-lark-channel', () => {
     const shadow = created.registeredTools.find((tool) => tool.name === 'exit_plan_mode') as unknown as {
       execute(args: unknown, exec: unknown): Promise<{ approved: true }>
     }
-    // The tool refuses outside plan mode, which the session log is the record of.
-    created.agent.session.events.push({ type: 'plan/mode', data: { active: true } })
+    // The tool refuses outside plan mode, which the plan service is the record of.
+    inPlanMode = true
     const plan = '# 迁移计划\n\n1. 先跑测试\n2. 再发预发'
 
     const approved = shadow.execute({ plan }, { agent: created.agent })
@@ -3903,8 +4016,6 @@ describe('dsh-lark-channel', () => {
     const shadow = created.registeredTools.find((tool) => tool.name === 'exit_plan_mode') as unknown as {
       execute(args: unknown, exec: unknown): Promise<{ approved: true }>
     }
-    created.agent.session.events.push({ type: 'plan/mode', data: { active: true } })
-
     const settled = shadow.execute({ plan: '# 计划\n步骤' }, { agent: created.agent }).catch((e: Error) => e)
     await vi.waitFor(() => { expect(harness.fake.sent.some((m) => 'card' in m.input)).toBe(true) })
     await harness.fake.emitMessage(fakeMessage({ content: '再考虑一下回滚' }))
@@ -3944,7 +4055,7 @@ describe('dsh-lark-channel', () => {
 
     const fiber = await ctx.plugin(invariant)
     expect(register).toHaveBeenCalledTimes(1)
-    expect(register.mock.calls[0]?.[0]).toBe('dsh-lark-channel')
+    expect(register.mock.calls[0]?.[0]).toBe('@nextnowlabs/dsh-lark')
     expect(typeof register.mock.calls[0]?.[1]).toBe('function')
 
     await fiber.dispose()

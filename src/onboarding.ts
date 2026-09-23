@@ -11,7 +11,7 @@
  * re-issued rather than reported as a failure. Every other rejection stops: a
  * refused authorization or a rejected request needs a human decision, and a new
  * code would not supply one.
- * @module dsh-lark-channel/onboarding
+ * @module @nextnowlabs/dsh-lark/onboarding
  */
 
 import qrcode from 'qrcode-terminal'
@@ -75,7 +75,7 @@ export type RegisterAppPort = (
  * and asks the user to re-authorize explicitly.
  */
 const REGISTRATION_PRESET: Pick<RegisterAppRequest, 'source' | 'appPreset'> = {
-  source: 'dsh-lark-channel',
+  source: '@nextnowlabs/dsh-lark',
   appPreset: {
     name: 'DSH Agent',
     desc: 'DSH 会话机器人',
@@ -282,7 +282,7 @@ export function beginOnboarding(run: OnboardingRun): void {
             + (credentials.registeredBy === undefined
               ? ''
               : ` 注册者：${credentials.registeredBy}（需要收窄时可填入 senderAllowlist / approvers）。`)
-          : `lark-channel: 应用 ${credentials.appId} 注册成功，但当前组合没有 settings 存储——`
+          : `lark-channel: 应用 ${credentials.appId} 注册成功，但当前组合没有可用的持久化存储——`
             + '凭证仅本次进程有效。要跨重启保留，请设置 LARK_APP_ID/LARK_APP_SECRET。')
         onCredentials(credentials)
         return

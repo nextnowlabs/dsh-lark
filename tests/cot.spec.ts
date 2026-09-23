@@ -96,11 +96,14 @@ describe('thinking process (CoT)', () => {
     const harness = await mountChannel()
     const emit = await chat(harness)
     emit('tool/call', { turn: 1, callId: 'c1', name: 'bash', arguments: '{}' })
+    // The v4 shape: the text is a TOP-LEVEL block, and the call id sits on the
+    // message rather than inside a released `tool-result` wrapper.
     emit('tool/result', {
       turn: 1,
       message: {
-        source: { callId: 'c1' },
-        content: [{ type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: 'total 24' }] }],
+        source: { kind: 'tool', callId: 'c1' },
+        toolCallId: 'c1',
+        content: [{ type: 'text', text: 'total ' }, { type: 'text', text: '24' }],
       },
     })
 

@@ -12,13 +12,17 @@
  * settings document, which is the wrong home for it twice over: that document
  * is meant to be read and hand-edited, and it is the same file a deployment
  * copies around to move its preferences. The secret now goes to the
- * credentials seam and the settings keep only the reference.
+ * credentials seam and only the REFERENCE is recorded in this channel's own
+ * durable state.
  *
  * A deployment without a credentials provider keeps working exactly as it
  * did, secret and all — degrading to a worse hiding place beats refusing to
- * onboard a bot.
- * @module dsh-lark-channel/credentials
+ * onboard a bot, and the store it lands in is a `0600` file this channel owns
+ * rather than the operator's configuration.
+ * @module @nextnowlabs/dsh-lark/credentials
  */
+
+import type { StatePatch } from './state.ts'
 
 /** Where a resolved credential came from, as the provider reports it. */
 export interface ResolvedCredential {
@@ -106,9 +110,9 @@ export async function resolveAppSecret(
 
 /** What became of an attempt to put a secret behind a reference. */
 export interface SecretStored {
-  /** The reference to record in settings, when the secret was stored behind one. */
+  /** The reference to record in this channel's store, when the secret went behind one. */
   readonly ref?: string
-  /** Whether the secret itself still has to be written to settings. */
+  /** Whether no seam took the secret, so the caller keeps it in this channel's own store. */
   readonly inSettings: boolean
 }
 
@@ -117,7 +121,7 @@ export interface SecretStored {
  * @param credentials - the seam, when a provider is composed.
  * @param secret - the secret to store.
  * @param report - operator console line.
- * @returns the reference to record, or the instruction to keep the secret in settings.
+ * @returns the reference to record, or the instruction to store the secret itself.
  */
 export async function storeAppSecret(
   credentials: HostCredentials | undefined,
@@ -132,28 +136,28 @@ export async function storeAppSecret(
   } catch (error) {
     // Worth a line rather than a throw: a bot that onboarded is more use than
     // one that refused to, and the operator can move the secret later.
-    report(`lark-channel: storing the app secret as "${ref}" failed (${String(error)}); keeping it in settings`)
+    report(`lark-channel: storing the app secret as "${ref}" failed (${String(error)}); keeping it in this channel's own store`)
     return { inSettings: true }
   }
 }
 
 /**
- * Move a secret already sitting in the settings document behind a reference.
+ * Move a secret already named by the configuration behind a reference.
  *
  * Runs on every boot that finds one there, so a deployment onboarded before
  * this existed is repaired by restarting rather than by re-scanning. The
- * settings value is blanked rather than deleted, because a deep-merge patch
- * cannot remove a key — and an empty secret is an absent one everywhere here.
+ * stored value is blanked rather than deleted: an empty secret is an absent one
+ * everywhere in this channel, and the record it sat in is one JSON object.
  * @param credentials - the seam, when a provider is composed.
- * @param config - the configuration as the settings document resolved it.
- * @param persist - the settings patch writer.
+ * @param config - the resolved configuration.
+ * @param persist - the durable state writer.
  * @param report - operator console line.
  * @returns the reference the secret now lives behind, when it moved.
  */
 export async function migrateAppSecret(
   credentials: HostCredentials | undefined,
   config: { readonly appSecret?: string | undefined; readonly appSecretRef?: string | undefined },
-  persist: (patch: object) => Promise<boolean>,
+  persist: (patch: StatePatch) => Promise<boolean>,
   report: (line: string) => void,
   ref: string = APP_SECRET_REF,
 ): Promise<string | undefined> {
@@ -163,10 +167,10 @@ export async function migrateAppSecret(
   const stored = await storeAppSecret(credentials, secret, report, ref)
   if (stored.ref === undefined) return undefined
   const persisted = await persist({ appSecret: '', appSecretRef: stored.ref }).catch((error: unknown) => {
-    report(`lark-channel: moving the app secret out of settings failed: ${String(error)}`)
+    report(`lark-channel: moving the app secret out of the store failed: ${String(error)}`)
     return false
   })
   if (!persisted) return undefined
-  report(`lark-channel: moved the app secret out of user settings; it is now the credential "${stored.ref}"`)
+  report(`lark-channel: moved the app secret behind the credential "${stored.ref}" and out of the stored state`)
   return stored.ref
 }

@@ -27,7 +27,7 @@
  * cannot see a symlink, which is why the landing directory is canonicalized
  * before anything is written into it: the name is safe and the PATH still has
  * to be proven to be inside the workspace.
- * @module dsh-lark-channel/files
+ * @module @nextnowlabs/dsh-lark/files
  */
 
 import { createHash } from 'node:crypto'

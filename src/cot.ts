@@ -7,7 +7,7 @@
  * code block. That vocabulary lines up with the host's session events almost
  * one to one, so this renderer translates rather than draws — and the final
  * answer goes where the platform says it belongs, in an ordinary message.
- * @module dsh-lark-channel/cot
+ * @module @nextnowlabs/dsh-lark/cot
  */
 
 import {

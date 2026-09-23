@@ -6,12 +6,12 @@
  * "switching" is really reaching a different session — and coming back to a
  * directory resumes the context that was built there instead of erasing it.
  *
- * The mapping persists through the host settings service, in the same section
+ * The mapping persists through this channel's own durable store, beside
  * that already holds onboarded credentials, so a restarted process routes every
  * conversation to the session it served before. Entries never need deletion —
  * the persistence layer deep-merges patches — so "back to the default" is an
  * explicit marker value rather than an absent key.
- * @module dsh-lark-channel/workspace
+ * @module @nextnowlabs/dsh-lark/workspace
  */
 
 import { createHash } from 'node:crypto'
@@ -130,7 +130,7 @@ export interface ChatWorkspacesOptions {
   readonly entries?: Record<string, string> | undefined
   /** Directory prefixes `/cd` may enter; empty allows anywhere. */
   readonly roots?: readonly string[] | undefined
-  /** Deep-merge one patch into the plugin's settings section; false = not composed. */
+  /** Merge one patch into this channel's durable store; false = not durable. */
   readonly persist?: ((patch: { chatWorkspaces: Record<string, string> }) => Promise<boolean>) | undefined
   /** Operator console line. */
   readonly report?: ((line: string) => void) | undefined
@@ -158,7 +158,7 @@ export interface ChatWorkspacesOptions {
  * The per-conversation workspace state: which directory each conversation is
  * pointed at, the session id that pair owns, and the `/cd` transition between
  * them. Pure state plus injected effects, so tests drive it without a
- * filesystem or a settings service.
+ * filesystem or a durable store.
  */
 export class ChatWorkspaces {
   private readonly entries: Map<string, string>
@@ -290,7 +290,7 @@ export class ChatWorkspaces {
       })
       if (!durable && !this.warnedNotDurable) {
         this.warnedNotDurable = true
-        this.report('lark-channel: workspace switches are in-memory only (no settings service); they reset on restart')
+        this.report('lark-channel: workspace switches are in-memory only (no durable storage); they reset on restart')
       }
     }
     return {
@@ -347,6 +347,6 @@ export async function runWorkspaceCommand(
   if (!result.changed) return `📁 当前就在 \`${result.path}\`。`
   await onSwitched()
   const where = result.toDefault ? `已切回默认工作区 \`${result.path}\`` : `已切换到 \`${result.path}\``
-  const durability = result.durable ? '' : '\n（本部署未组合 settings，这次切换在重启后会丢失。）'
+  const durability = result.durable ? '' : '\n（本部署没有可用的持久化存储，这次切换在重启后会丢失。）'
   return `📁 ${where}\n下一条消息在该目录继续；这个目录之前的会话上下文会被续用。${durability}`
 }

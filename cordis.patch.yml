@@ -6,19 +6,24 @@
 
 - insert:
     - id: lark-channel
-      name: 'dsh-lark-channel'
+      name: '@nextnowlabs/dsh-lark'
       config:
         # Credentials layer as: these entry values (env via `!!js`, never
-        # `!js`) → the user settings document. With neither set, first boot
-        # logs a QR URL; scanning it creates the app and the credentials
-        # persist through the host `settings` service.
+        # `!js`) → the credential named by `appSecretRef` → what first boot
+        # scanned. With none set, first boot logs a QR URL; scanning it creates
+        # the app, stores the secret through the host `credentials` seam, and
+        # records the app id in this channel's own state domain — one JSON
+        # document per row under `$DSH_HOME/storages/`.
         appId: !!js process.env.LARK_APP_ID
         appSecret: !!js process.env.LARK_APP_SECRET
         # domain: https://open.larksuite.com   # default is Feishu
         # cwd: an absolute workspace directory  # default is the host process cwd
         # workspaceRoots: []   # directory prefixes /cd may enter; empty = any
-        # chatWorkspaces: {}   # managed by /cd via the settings service; not hand-edited
-        # chatModels: {}       # managed by /model via the settings service; not hand-edited
+        # chatWorkspaces: {}   # read as a SEED for the state domain below, once;
+        # chatModels: {}       # /cd and /model write there, not here. Listed at
+        # chatEpochs: {}       # all so a deployment upgraded from a settings.yaml
+        # chatSessions: {}     # section — which dsh imports into this row — keeps
+        #                      # its per-conversation state. Do not hand-edit.
         # provider: deepseek                    # default is the host agentDefaultModel
         # model: deepseek-chat
         # Output. `cot` shows the process as a native thinking-process message
@@ -51,4 +56,4 @@
     # host's runtime-diagnostics composition), and a row waiting on the absent
     # service fails the whole tree at boot. Diagnostic compositions add:
     #   - id: lark-channel-invariant
-    #     name: 'dsh-lark-channel/invariant'
+    #     name: '@nextnowlabs/dsh-lark/invariant'

@@ -1,6 +1,6 @@
 /**
  * Serializable configuration, schema, and direct-call defaults.
- * @module dsh-lark-channel/config
+ * @module @nextnowlabs/dsh-lark/config
  */
 
 import z from '@deepseek-ai/schemastery'
@@ -27,7 +27,7 @@ const DEFAULT_DENY_TOOLS = [] as const
 export interface Config {
   /**
    * Names this row when a deployment composes more than one, so two bots keep
-   * separate settings sections, separate app-secret credentials, and separate
+   * separate durable state, separate app-secret credentials, and separate
    * session ids — two bots in one group would otherwise share an agent.
    *
    * Absent is the original single-row deployment, whose identifiers are
@@ -40,8 +40,8 @@ export interface Config {
   /**
    * Lark/Feishu app secret paired with {@link appId}. A deployment that
    * injects one here keeps owning it; onboarding stores what it scans behind
-   * {@link Config.appSecretRef} instead, so nothing writes a secret into the
-   * user settings document that a credentials provider could hold.
+   * {@link Config.appSecretRef} instead, so no secret reaches a document a
+   * credentials provider could hold it in.
    */
   appSecret?: string
   /**
@@ -62,29 +62,37 @@ export interface Config {
    */
   workspaceRoots?: string[]
   /**
-   * Managed state, not configuration: the workspace each conversation was
-   * `/cd`-ed to, keyed by conversation key, written back through the settings
-   * service. An empty-string value marks "explicitly the default" — the
-   * persistence layer deep-merges patches, so entries are overwritten rather
-   * than deleted.
+   * Managed state, not configuration, and no longer where new values land: the
+   * workspace each conversation was `/cd`-ed to, keyed by conversation key.
+   *
+   * Read as a SEED for this channel's own durable store, per key, so a
+   * conversation moved after the upgrade is not dragged back to where a
+   * document left it by some other conversation still living there. It stays
+   * declared because that is where an upgraded deployment's values arrive from:
+   * dsh 0.1.7 imports the removed settings document's sections into the profile
+   * row's `config`, and a schema without these fields would reject the row.
+   * An empty-string value marks "explicitly the default".
    */
   chatWorkspaces?: Record<string, string>
   /**
    * Managed state, not configuration: the `provider/model` route each
    * conversation asked for via `/model use`, keyed by conversation key, with
-   * the same empty-string default marker as {@link chatWorkspaces}.
+   * the same empty-string default marker and the same seed-only role as
+   * {@link chatWorkspaces}.
    */
   chatModels?: Record<string, string>
   /**
    * Managed state, not configuration: how many times each conversation has
-   * started over with `/new`, keyed by the session id it derives at epoch
-   * zero. Absent is the first session, whose id is unchanged.
+   * started over with `/new`, keyed by the session id it derives at epoch zero.
+   * Absent is the first session, whose id is unchanged. Seed-only, like
+   * {@link chatWorkspaces}.
    */
   chatEpochs?: Record<string, string>
   /**
    * Managed state, not configuration: the session each conversation was
-   * explicitly bound to via /session <id>, keyed by conversation key. An
+   * explicitly bound to via `/session <id>`, keyed by conversation key. An
    * empty-string value marks automatic derivation (the override was reset).
+   * Seed-only, like {@link chatWorkspaces}.
    */
   chatSessions?: Record<string, string>
   /** Provider route override for chat agents; defaults to the host `agentDefaultModel` selection. */
@@ -290,7 +298,13 @@ export interface ResolvedConfig {
   approvers: string[]
 }
 
-/** Loader-visible configuration schema and defaults. */
+/**
+ * Loader-visible configuration schema and defaults.
+ *
+ * Annotated so the emitted declaration names this interface rather than the
+ * schema library's internals — and so a field this interface declares but the
+ * schema does not (or the reverse) fails the build instead of drifting.
+ */
 export const Config: z<Config> = z.object({
   instance: z.string(),
   appId: z.string(),

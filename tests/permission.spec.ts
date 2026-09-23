@@ -10,7 +10,7 @@ import {
 } from '../src/permission.ts'
 import { approvalCard, permissionCard, settledPermissionCard, statusCard } from '../src/cards.ts'
 import { cardControls, cardTexts } from './harness.ts'
-import type { HostAgent, HostCommands } from '../src/host.ts'
+import type { HostAgent, HostCommands, HostPresetOption } from '../src/host.ts'
 
 /** An agent stub; the command runtime is what actually gets driven. */
 const agent = { id: 's1', session: { id: 's1' }, followup: () => {}, cancel: () => {} } as unknown as HostAgent
@@ -20,7 +20,7 @@ function fakeCommands(replies: Record<string, string>) {
   const ran: string[] = []
   const commands: HostCommands = {
     list: () => [],
-    execute: async (_agent, line) => {
+    execute: async (_agent, line, _attachments, _signal) => {
       ran.push(line)
       const text = replies[line.trim()]
       return text === undefined
@@ -45,6 +45,22 @@ function fakeProjections(values: Record<string, unknown>) {
   }
 }
 
+/**
+ * The deployment's table, as the host service publishes it: the knobs a switch
+ * is classified by, and the catalog a picker offers.
+ */
+function table(entries: Record<string, { sandbox: string; approval: string }>) {
+  return {
+    names: Object.keys(entries),
+    resolve: (name: string) => {
+      const spec = entries[name]
+      if (spec === undefined) throw new Error(`unknown preset ${name}`)
+      return spec
+    },
+    catalog: () => ({ options: Object.keys(entries).map(value => ({ value })) }),
+  }
+}
+
 describe('reading which preset is in force', () => {
   it('reads the published projection, not a command and not the raw log', () => {
     // Three ways to answer this question, and only one of them is a read that
@@ -52,16 +68,19 @@ describe('reading which preset is in force', () => {
     // costs the whole log per card, and the projection is the host's own
     // cached, schema-carrying answer.
     const { projections, reads } = fakeProjections({
-      permissions: {
-        currentValue: 'danger-full-access',
-        options: [{ value: 'workspace-write' }, { value: 'danger-full-access' }],
-      },
+      permissions: { currentValue: 'danger-full-access' },
     })
-    expect(readPresets(projections, agent)).toEqual({
+    // The choices come from the process-level catalog, the preset in force from
+    // the session's own projection: the host split the two, and a picker that
+    // read options off the projection would offer nothing at all.
+    expect(readPresets(projections, agent, table({
+      'workspace-write': { sandbox: 'workspace-write', approval: 'ask' },
+      'danger-full-access': { sandbox: 'danger-full-access', approval: 'never' },
+    }))).toEqual({
       current: 'danger-full-access',
       available: [
-        { value: 'workspace-write', name: 'workspace-write' },
-        { value: 'danger-full-access', name: 'danger-full-access' },
+        { value: 'workspace-write', name: 'workspace-write', sandbox: 'workspace-write', approval: 'ask' },
+        { value: 'danger-full-access', name: 'danger-full-access', sandbox: 'danger-full-access', approval: 'never' },
       ],
     })
     expect(reads).toEqual(['s1'])
@@ -75,27 +94,42 @@ describe('reading which preset is in force', () => {
     expect(readPresets(broken, agent)).toEqual({ available: [] })
   })
 
-  it('keeps what the host published about each preset, and skips what it cannot read', () => {
+  it('keeps what the catalog published about each preset, and skips what it cannot read', () => {
     // The host names and explains its own presets, including ones a deployment
     // added: reducing them to a value leaves a card able to explain exactly
     // the names this plugin happens to hardcode.
-    const { projections } = fakeProjections({
-      permissions: {
-        currentValue: 'a',
+    const { projections } = fakeProjections({ permissions: { currentValue: 'a' } })
+    const catalog = {
+      names: ['a', 'b'],
+      resolve: (name: string) => ({ sandbox: 'read-only', approval: 'ask', name }),
+      // Cast because these ARE the shapes a host's runtime payload can carry
+      // whatever its declaration says — which is what `readOption` exists for.
+      catalog: () => ({
         options: [
           { value: 'a', name: 'Confined', description: 'Writes inside the workspace.' },
           { name: 'b' },
           { other: 'c' },
         ],
-      },
-    })
-    expect(readPresets(projections, agent)).toEqual({
+      }) as unknown as { options: readonly HostPresetOption[] },
+    }
+    expect(readPresets(projections, agent, catalog)).toEqual({
       current: 'a',
       available: [
-        { value: 'a', name: 'Confined', description: 'Writes inside the workspace.' },
-        { value: 'b', name: 'b' },
+        { value: 'a', name: 'Confined', description: 'Writes inside the workspace.', sandbox: 'read-only', approval: 'ask' },
+        { value: 'b', name: 'b', sandbox: 'read-only', approval: 'ask' },
       ],
     })
+  })
+
+  it('offers nothing when the deployment composes no catalog to offer from', () => {
+    const { projections } = fakeProjections({ permissions: { currentValue: 'a' } })
+    expect(readPresets(projections, agent)).toEqual({ current: 'a', available: [] })
+    const unreadable = {
+      names: [] as string[],
+      resolve: () => ({ sandbox: 'read-only', approval: 'ask' }),
+      catalog: () => { throw new Error('no roster composed') },
+    }
+    expect(readPresets(projections, agent, unreadable)).toEqual({ current: 'a', available: [] })
   })
 })
 
@@ -117,26 +151,11 @@ describe('switching the preset', () => {
 })
 
 describe('what a consent card is allowed to claim', () => {
-  /** The deployment's table, as the host service publishes it. */
-  const table = (entries: Record<string, { sandbox: string; approval: string }>) => ({
-    names: Object.keys(entries),
-    resolve: (name: string) => {
-      const spec = entries[name]
-      if (spec === undefined) throw new Error(`unknown preset ${name}`)
-      return spec
-    },
-  })
-
   it('describes a preset by what it does, not by what it is called', () => {
     // A deployment writes its own table. Describing `workspace-write` from the
     // name, when the table made it unconfined, asks a room to authorize one
     // thing while granting another — on a consent screen.
-    const { projections } = fakeProjections({
-      permissions: {
-        currentValue: 'read-only',
-        options: [{ value: 'read-only' }, { value: 'workspace-write' }],
-      },
-    })
+    const { projections } = fakeProjections({ permissions: { currentValue: 'read-only' } })
     const state = readPresets(projections, agent, table({
       'read-only': { sandbox: 'read-only', approval: 'ask' },
       'workspace-write': { sandbox: 'danger-full-access', approval: 'never' },
@@ -228,7 +247,7 @@ describe('a switch cancelled after the command started', () => {
     const reason = new Error('the conversation moved on')
     const commands: HostCommands = {
       list: () => [],
-      execute: async (_agent, _line, signal) => {
+      execute: async (_agent, _line, _attachments, signal) => {
         await new Promise((_resolve, reject) => {
           signal?.addEventListener('abort', () => { reject(signal.reason as Error) }, { once: true })
         })

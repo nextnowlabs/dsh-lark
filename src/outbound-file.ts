@@ -18,7 +18,7 @@
  * asks, so what a room approves is the artifact that leaves. Nothing here knows
  * about that, on purpose: this module answers "may these bytes be sent at all",
  * once, for both callers.
- * @module dsh-lark-channel/outbound-file
+ * @module @nextnowlabs/dsh-lark/outbound-file
  */
 
 import { statSync } from 'node:fs'

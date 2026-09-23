@@ -1,11 +1,11 @@
 /**
- * Package-owned invariant companion for `dsh-lark-channel`.
- * @module dsh-lark-channel/invariant
+ * Package-owned invariant companion for `@nextnowlabs/dsh-lark`.
+ * @module @nextnowlabs/dsh-lark/invariant
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 
-const PACKAGE_NAME = 'dsh-lark-channel'
+const PACKAGE_NAME = '@nextnowlabs/dsh-lark'
 
 /** A package-attributed invariant failure reported by the host registry. */
 type InvariantFailure = (message: string) => never

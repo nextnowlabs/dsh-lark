@@ -11,7 +11,7 @@
  * stayed in the menu and answered "unknown command" for everyone who picked it
  * — while a deployment that does curate its own menu has `syncSlashCommands`
  * to turn this off.
- * @module dsh-lark-channel/slash-panel
+ * @module @nextnowlabs/dsh-lark/slash-panel
  */
 
 /** One command already registered on the app. */

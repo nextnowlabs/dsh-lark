@@ -4,7 +4,7 @@
  * running). Read through `import.meta.url` rather than a bare specifier: the
  * bundler leaves a runtime URL alone, and both `src/` and the published `lib/`
  * sit one directory below the manifest.
- * @module dsh-lark-channel/version
+ * @module @nextnowlabs/dsh-lark/version
  */
 
 import { readFileSync } from 'node:fs'
