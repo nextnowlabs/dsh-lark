@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-10-20
 
 ### Added
 - `/agent` switches a conversation's Agent preset from the chat: the bare command opens a picker built from the deployment's `agentPresets` roster, `/agent <id>` switches directly, and `/agent reset` returns to the configured default. A preset decides the agent's tools, prompt sections, and skills, and the host refuses to swap it once a session has started its first turn — so a switch records the choice, retires the conversation's current binding, and derives a fresh session id; the previous log is left untouched and `/sessions` still reaches it. The card says that plainly instead of implying a mid-session change. Every new session the conversation derives — `/new`, `/cd`, or another `/agent` switch — starts under the chosen preset, and the choice is persisted per conversation through the channel's state domain beside the workspace, model, and epoch maps. The deployment keeps a default: a conversation that never chose anything joins `config.preset` (or the roster default when that is absent), now documented in the configuration rather than left implicit.
