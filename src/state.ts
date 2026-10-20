@@ -4,8 +4,8 @@
  * Two kinds of durable fact live here, and neither is configuration:
  *
  * - what a conversation decided — the directory it was `/cd`-ed to, the model
- *   route it asked for, how many times it started over, and the session it was
- *   explicitly pointed at;
+ *   route it asked for, the Agent preset it starts new sessions under, how
+ *   many times it started over, and the session it was explicitly pointed at;
  * - what first-boot onboarding learned — the app it created and, when a
  *   credentials provider could not take the secret, the secret itself.
  *
@@ -48,6 +48,8 @@ export interface ChannelState {
   readonly chatEpochs: Record<string, string>
   /** The session each conversation was pointed at; `''` is "derive it again". */
   readonly chatSessions: Record<string, string>
+  /** The Agent preset each conversation asked for; `''` is "the deployment default". */
+  readonly chatPresets: Record<string, string>
   /** The Lark app this deployment onboarded, when it did. */
   readonly appId?: string | undefined
   /** The credential holding that app's secret, when a provider took it. */
@@ -82,6 +84,7 @@ export const STATE_TABLES = {
   chatModels: 'chat_models',
   chatEpochs: 'chat_epochs',
   chatSessions: 'chat_sessions',
+  chatPresets: 'chat_presets',
 } as const
 
 /** One table of {@link STATE_TABLES}. */
@@ -199,6 +202,7 @@ function readDomain(domain: HostStateDomain): ChannelState {
     chatModels: readTable(domain, STATE_TABLES.chatModels),
     chatEpochs: readTable(domain, STATE_TABLES.chatEpochs),
     chatSessions: readTable(domain, STATE_TABLES.chatSessions),
+    chatPresets: readTable(domain, STATE_TABLES.chatPresets),
     ...readScalars(global),
   }
 }
@@ -356,6 +360,7 @@ function memoryOnlyStore(): StateStore {
     chatModels: {},
     chatEpochs: {},
     chatSessions: {},
+    chatPresets: {},
   }
   return {
     snapshot: () => ({ ...state }),

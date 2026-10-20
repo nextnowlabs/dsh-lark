@@ -131,6 +131,13 @@ export interface StatusFields {
    */
   readonly preset?: PresetOption | undefined
   /**
+   * The Agent preset the next session would be composed from, and whether that
+   * is the deployment default. Resolved without an agent, the same way the
+   * model route is: it is channel state, not something the session log owns
+   * until the session exists.
+   */
+  readonly agentPreset?: { readonly label: string; readonly isDefault: boolean } | undefined
+  /**
    * What the next request would carry against what the model can hold. Absent
    * until a session has made one request, and absent entirely where the
    * deployment composed no token meter.
@@ -167,6 +174,7 @@ export function renderStatusCard(fields: StatusFields, subject: ConversationSubj
     pendingApprovals: fields.pendingApprovals,
     version: fields.version,
     ...fields.preset === undefined ? {} : { preset: fields.preset },
+    ...fields.agentPreset === undefined ? {} : { agentPreset: fields.agentPreset },
     ...fields.context === undefined ? {} : { context: fields.context },
     ...fields.usage === undefined ? {} : { usage: fields.usage },
     // Marked, because a status card stays in the chat and refreshing twice is

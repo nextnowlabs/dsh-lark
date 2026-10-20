@@ -3766,12 +3766,228 @@ describe('dsh-lark', () => {
       expect(sentText(harness)).toContain('/ws')
       expect(sentText(harness)).toContain(`/${GET_COMMAND}`)
       expect(sentText(harness)).toContain('/model')
+      expect(sentText(harness)).toContain('/agent')
       expect(sentText(harness)).toContain('/status')
       await vi.waitFor(() => { expect(harness.fake.panelCreated).toContain('cd') })
       expect(harness.fake.panelCreated).toContain('ws')
       expect(harness.fake.panelCreated).toContain(GET_COMMAND)
       expect(harness.fake.panelCreated).toContain('model')
+      expect(harness.fake.panelCreated).toContain('agent')
       expect(harness.fake.panelCreated).toContain('status')
+      await harness.dispose()
+    })
+  })
+
+  describe('agent preset switching', () => {
+    /** Everything a reply sent to the chat said, joined for containment checks. */
+    const sentText = (harness: { fake: { sent: { input: unknown }[] } }): string =>
+      harness.fake.sent.map(m => JSON.stringify(m.input)).join('\n')
+
+    /** The last card sent to the chat. */
+    const lastCard = (harness: { fake: { sent: { input: unknown }[] } }): object => {
+      const sent = harness.fake.sent.filter((m) => 'card' in (m.input as object))
+      return (sent.at(-1)!.input as { card: object }).card
+    }
+
+    /** A deployment declaring two presets, with names a card can be judged by. */
+    const rosterFor = (broken: string[] = []) => {
+      const roster = createFakePresets(['standard', 'bid'], 'standard', broken)
+      roster.describe('standard', '标准模式', '日常任务')
+      roster.describe('bid', '国网招投标', '按评分细则写投标文件')
+      return roster
+    }
+
+    it('answers /agent with the roster and creates no session', async () => {
+      const roster = rosterFor()
+      const harness = await mountChannel({}, { presets: roster.presets })
+      await harness.fake.emitMessage(fakeMessage({ content: '/agent' }))
+      await vi.waitFor(() => { expect(sentText(harness)).toContain('国网招投标') })
+
+      expect(harness.agents.created).toHaveLength(0)
+      expect(sentText(harness)).toContain('标准模式')
+      const controls = cardControls(lastCard(harness))
+        .map(control => control.value as { kind?: string; preset?: string })
+      expect(controls.some(value => value.kind === 'dsh-lark/agent' && value.preset === 'bid')).toBe(true)
+      // The deployment default is stated as the current choice, so there is
+      // nothing to reset TO: no reset control is offered.
+      expect(controls.some(value => value.kind === 'dsh-lark/agent' && value.preset === undefined)).toBe(false)
+      await harness.dispose()
+    })
+
+    it('starts the NEXT session under the chosen preset, and keeps the old session', async () => {
+      const roster = rosterFor()
+      const store = createFakeStorage()
+      const harness = await mountChannel({}, { presets: roster.presets, storage: store.storage })
+      await harness.fake.emitMessage(fakeMessage({ content: 'hi' }))
+      await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
+      const original = harness.agents.created[0]!
+      expect(original.meta?.agentPreset).toBe('standard')
+
+      await harness.fake.emitMessage(fakeMessage({ content: '/agent bid' }))
+      await vi.waitFor(() => { expect(sentText(harness)).toContain('国网招投标') })
+      expect(sentText(harness)).toContain('新会话')
+      expect(original.dispose).toHaveBeenCalledTimes(1)
+      expect(store.table('chat_presets')).toEqual({ oc_chat_1: 'bid' })
+
+      await harness.fake.emitMessage(fakeMessage({ content: 'next' }))
+      await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(2) })
+      const created = harness.agents.created[1]!
+      // A preset cannot be swapped on a running session, so a switch derives a
+      // FRESH session id rather than resuming the old one.
+      expect(created.sessionId).toBe(`${original.sessionId}--e1`)
+      expect(created.meta?.agentPreset).toBe('bid')
+      expect(roster.mounted.at(-1)).toEqual({ id: 'bid', scoped: true })
+      await harness.dispose()
+    })
+
+    it('switches from the card, repaints it, and records the choice', async () => {
+      const roster = rosterFor()
+      const harness = await mountChannel({}, { presets: roster.presets })
+      await harness.fake.emitMessage(fakeMessage({ content: '/agent' }))
+      await vi.waitFor(() => { expect(sentText(harness)).toContain('国网招投标') })
+      const row = cardControls(lastCard(harness))
+        .find(control => (control.value as { preset?: string }).preset === 'bid')!
+
+      const response = await harness.fake.emitCardAction(clickAction(row.value))
+      expect(response).toMatchObject({ toast: { type: 'success' } })
+      const painted = (response as { card: { type: string; data: object } }).card
+      expect(painted.type).toBe('raw')
+      // The chosen row now states itself instead of offering a press, and the
+      // way back to the deployment default is offered.
+      const controls = cardControls(painted.data)
+        .map(control => control.value as { preset?: string })
+      expect(controls.some(value => value.preset === 'bid')).toBe(false)
+      expect(controls.some(value => value.preset === undefined)).toBe(true)
+
+      await harness.fake.emitMessage(fakeMessage({ content: 'hello' }))
+      await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
+      expect(harness.agents.created[0]!.meta?.agentPreset).toBe('bid')
+      await harness.dispose()
+    })
+
+    it('refuses a preset the roster no longer offers', async () => {
+      const roster = rosterFor()
+      const harness = await mountChannel({}, { presets: roster.presets })
+      const response = await harness.fake.emitCardAction(clickAction({
+        kind: 'dsh-lark/agent',
+        key: 'oc_chat_1',
+        chatId: 'oc_chat_1',
+        chatType: 'p2p',
+        preset: 'ghost',
+      }))
+      expect(response).toMatchObject({ toast: { type: 'info' } })
+      // Nothing was recorded, so the first message still starts on the default.
+      await harness.fake.emitMessage(fakeMessage({ content: 'hello' }))
+      await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
+      expect(harness.agents.created[0]!.meta?.agentPreset).toBe('standard')
+      await harness.dispose()
+    })
+
+    it('refuses a pick forwarded into another chat', async () => {
+      const roster = rosterFor()
+      const harness = await mountChannel({}, { presets: roster.presets })
+      await harness.fake.emitMessage(fakeMessage({ content: '/agent' }))
+      await vi.waitFor(() => { expect(sentText(harness)).toContain('国网招投标') })
+      const row = cardControls(lastCard(harness))[0]!
+
+      const response = await harness.fake.emitCardAction(clickAction(row.value, { chatId: 'oc_elsewhere' }))
+      expect(response).toMatchObject({ toast: { type: 'error' } })
+
+      await harness.fake.emitMessage(fakeMessage({ content: 'hello' }))
+      await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
+      expect(harness.agents.created[0]!.meta?.agentPreset).toBe('standard')
+      await harness.dispose()
+    })
+
+    it('returns to the deployment default on reset', async () => {
+      const roster = rosterFor()
+      const harness = await mountChannel({ preset: 'bid' }, { presets: roster.presets })
+      await harness.fake.emitMessage(fakeMessage({ content: '/agent standard' }))
+      await vi.waitFor(() => { expect(sentText(harness)).toContain('标准模式') })
+
+      await harness.fake.emitMessage(fakeMessage({ content: '/agent reset' }))
+      await vi.waitFor(() => { expect(sentText(harness)).toContain('默认 Agent 预设') })
+
+      await harness.fake.emitMessage(fakeMessage({ content: 'hello' }))
+      await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
+      expect(harness.agents.created[0]!.meta?.agentPreset).toBe('bid')
+      await harness.dispose()
+    })
+
+    it('reports the next session\'s preset in /status, and refreshes it', async () => {
+      const roster = rosterFor()
+      const harness = await mountChannel({}, { presets: roster.presets })
+      await harness.fake.emitMessage(fakeMessage({ content: '/status' }))
+      await vi.waitFor(() => { expect(sentText(harness)).toContain('Agent 预设') })
+      expect(sentText(harness)).toContain('标准模式')
+      expect(sentText(harness)).toContain('部署默认')
+
+      await harness.fake.emitMessage(fakeMessage({ content: '/agent bid' }))
+      await vi.waitFor(() => { expect(sentText(harness)).toContain('国网招投标') })
+      await harness.fake.emitMessage(fakeMessage({ content: '/status' }))
+      await vi.waitFor(() => { expect(sentText(harness)).toContain('国网招投标') })
+      // The status card's refresh re-reads the same channel state.
+      const refresh = cardControls(lastCard(harness))[0]!
+      const response = await harness.fake.emitCardAction(clickAction(refresh.value))
+      expect(response).toMatchObject({ toast: { type: 'success' } })
+      const painted = (response as { card: { data: object } }).card.data
+      expect(cardTexts(painted).map(text => text.content)).toContain('国网招投标')
+      await harness.dispose()
+    })
+
+    it('resumes a session under the preset its log records, not the conversation\'s choice', async () => {
+      const roster = rosterFor()
+      const harness = await mountChannel(
+        { chatSessions: { oc_chat_1: 'web-session-1' } },
+        {
+          presets: roster.presets,
+          // The projection the host folds over a stored log; the resumed
+          // session was produced under `bid`, while the config default is
+          // `standard` and this conversation never chose anything.
+          sessionProjections: {
+            snapshot: () => ({ asOfSeq: 1, values: { agentPreset: 'bid' } }),
+          },
+        },
+      )
+      harness.agents.resumable.add('web-session-1')
+      await harness.fake.emitMessage(fakeMessage({ content: 'carry on' }))
+      await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
+      expect(harness.agents.created[0]!.sessionId).toBe('web-session-1')
+      expect(roster.mounted).toEqual([{ id: 'bid', scoped: true }])
+      await harness.dispose()
+    })
+
+    it('ends a session pick, so the switch cannot be skipped by continuing it', async () => {
+      const roster = rosterFor()
+      const harness = await mountChannel(
+        { chatSessions: { oc_chat_1: 'picked-1' } },
+        { presets: roster.presets },
+      )
+      harness.agents.resumable.add('picked-1')
+      await harness.fake.emitMessage(fakeMessage({ content: 'carry on' }))
+      await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(1) })
+      expect(harness.agents.created[0]!.sessionId).toBe('picked-1')
+
+      await harness.fake.emitMessage(fakeMessage({ content: '/agent bid' }))
+      await vi.waitFor(() => { expect(sentText(harness)).toContain('国网招投标') })
+      await harness.fake.emitMessage(fakeMessage({ content: 'under the new preset' }))
+      await vi.waitFor(() => { expect(harness.agents.created).toHaveLength(2) })
+      const created = harness.agents.created[1]!
+      // The picked session is NOT resumed: continuing it would keep the old
+      // composition the switch exists to leave behind.
+      expect(created.sessionId).not.toBe('picked-1')
+      expect(created.sessionId).toBe('lark-oc_chat_1--e1')
+      expect(created.meta?.agentPreset).toBe('bid')
+      await harness.dispose()
+    })
+
+    it('states there is nothing to choose in a deployment without a preset roster', async () => {
+      const harness = await mountChannel()
+      await harness.fake.emitMessage(fakeMessage({ content: '/agent' }))
+      await vi.waitFor(() => { expect(sentText(harness)).toContain('没有声明任何 Agent 预设') })
+      expect(harness.agents.created).toHaveLength(0)
+      await harness.fake.emitMessage(fakeMessage({ content: '/agent standard' }))
+      await vi.waitFor(() => { expect(sentText(harness)).toContain('没有名为 `standard`') })
       await harness.dispose()
     })
   })

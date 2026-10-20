@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `/agent` switches a conversation's Agent preset from the chat: the bare command opens a picker built from the deployment's `agentPresets` roster, `/agent <id>` switches directly, and `/agent reset` returns to the configured default. A preset decides the agent's tools, prompt sections, and skills, and the host refuses to swap it once a session has started its first turn — so a switch records the choice, retires the conversation's current binding, and derives a fresh session id; the previous log is left untouched and `/sessions` still reaches it. The card says that plainly instead of implying a mid-session change. Every new session the conversation derives — `/new`, `/cd`, or another `/agent` switch — starts under the chosen preset, and the choice is persisted per conversation through the channel's state domain beside the workspace, model, and epoch maps. The deployment keeps a default: a conversation that never chose anything joins `config.preset` (or the roster default when that is absent), now documented in the configuration rather than left implicit.
+- Resuming a stored session joins the preset its log records, read from the host's `agentPreset` projection, instead of whatever the deployment's config says today. A `/sessions` pick can now carry on a session opened under another preset — or on another surface — without silently rewriting the composition its history was produced under. A deployment without the projection, or a session older than the registry, still falls back to the config default.
+- `/status` gained an Agent preset row: the preset the next session will be composed from, and whether it is the deployment default.
+
 ## 0.1.7 — 2026-09-23
 
 Ported to DeepSeek Harness `0.1.7-alpha.2`. That release removed two seams this

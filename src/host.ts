@@ -419,6 +419,12 @@ export interface HostSystemPrompt {
 /** One declared preset's metadata (subset of the host `AgentPreset`). */
 export interface HostAgentPreset {
   readonly id: string
+  /** Display name, when the declaration set one. */
+  readonly name?: string
+  /** One-line description, when the declaration set one. */
+  readonly description?: string
+  /** Sort key among the roster, when the declaration set one. */
+  readonly order?: number
   /**
    * Why the preset could not be composed, when it could not. Resolving one
    * succeeds either way, so a caller that only reads {@link id} learns of the
@@ -434,6 +440,15 @@ export interface HostAgentPreset {
  * that joins no preset reaches the model with no tools at all.
  */
 export interface HostAgentPresets {
+  /**
+   * Every declared preset, including ones that failed to compose.
+   *
+   * Optional in this narrow contract so a deployment composing an older
+   * registry still boots untouched; `/agent` then has nothing to offer and
+   * says so, rather than failing to load.
+   * @returns the roster in its declared order.
+   */
+  list?(): Promise<readonly HostAgentPreset[]>
   /**
    * Resolve a preset id, or the roster default when absent. Metadata only:
    * since dsh 0.1.7 a preset that failed to compose still resolves, carrying

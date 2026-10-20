@@ -23,9 +23,12 @@
         # chatModels: {}       # /cd and /model write there, not here. Listed at
         # chatEpochs: {}       # all so a deployment upgraded from a settings.yaml
         # chatSessions: {}     # section — which dsh imports into this row — keeps
-        #                      # its per-conversation state. Do not hand-edit.
+        # chatPresets: {}      # its per-conversation state. Do not hand-edit.
         # provider: deepseek                    # default is the host agentDefaultModel
         # model: deepseek-chat
+        # preset: standard                      # default agent preset; /agent
+        #                                       # switches it per conversation (a
+        #                                       # switch starts a new session)
         # Output. `cot` shows the process as a native thinking-process message
         # and sends the answer as an ordinary one; `stream` keeps the whole turn
         # in one typewriter card, for clients older than that surface.

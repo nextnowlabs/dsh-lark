@@ -316,6 +316,7 @@ function seedFrom(config: Config, store: StateStore): Config {
     chatModels: { ...config.chatModels, ...stored.chatModels },
     chatEpochs: { ...config.chatEpochs, ...stored.chatEpochs },
     chatSessions: { ...config.chatSessions, ...stored.chatSessions },
+    chatPresets: { ...config.chatPresets, ...stored.chatPresets },
     ...stored.appId === undefined ? {} : { appId: stored.appId },
     ...stored.appSecretRef === undefined ? {} : { appSecretRef: stored.appSecretRef },
     // Only a deployment with no credentials provider ever stored the secret

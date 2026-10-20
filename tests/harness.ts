@@ -865,7 +865,22 @@ export async function mountChannel(
 export function createFakePresets(ids: string[] = ['default'], defaultId = ids[0]!, broken: string[] = []) {
   const mounted: { id: string | undefined; scoped: boolean }[] = []
   const resolved: (string | undefined)[] = []
+  const listed: string[][] = []
+  /** Display metadata, when a test names presets instead of using the ids. */
+  const names: Record<string, { name?: string; description?: string }> = {}
   const presets: HostAgentPresets = {
+    async list() {
+      listed.push([...ids])
+      return ids.map((id, index) => ({
+        id,
+        // A display name the id cannot supply, so a card asserting the NAME
+        // proves it read the roster rather than echoing the id back.
+        name: names[id]?.name ?? `${id} mode`,
+        ...names[id]?.description === undefined ? {} : { description: names[id]!.description },
+        order: index,
+        ...broken.includes(id) ? { broken: 'its row failed to activate (fake)' } : {},
+      }))
+    },
     async resolve(id) {
       resolved.push(id)
       const wanted = id ?? defaultId
@@ -877,7 +892,16 @@ export function createFakePresets(ids: string[] = ['default'], defaultId = ids[0
       return undefined
     },
   }
-  return { presets, mounted, resolved }
+  return {
+    presets,
+    mounted,
+    resolved,
+    listed,
+    /** Give one preset a display name/description for card assertions. */
+    describe(id: string, name: string, description?: string): void {
+      names[id] = { name, ...description === undefined ? {} : { description } }
+    },
+  }
 }
 
 /** An in-memory `workspaceRegistry` recording lookups, creations, and attachments. */

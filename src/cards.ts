@@ -804,6 +804,7 @@ const STATUS = {
   version: { zh: '版本', en: 'Version' },
   preset: { zh: '权限', en: 'Permissions' },
   presetOpen: { zh: '不沙箱，且不再弹审批卡', en: 'no sandbox, and no approval cards' },
+  agentPreset: { zh: 'Agent 预设', en: 'Agent preset' },
   pending: { zh: '待审批', en: 'Awaiting approval' },
   context: { zh: '上下文', en: 'Context' },
   usage: { zh: '本会话用量', en: 'Tokens this session' },
@@ -820,8 +821,8 @@ const STATUS = {
   switched: { zh: '已切换到指定会话，下一条消息接续', en: 'Switched — resumed from your next message' },
   refresh: { zh: '刷新', en: 'Refresh' },
   foot: {
-    zh: '工作区用 /cd 切换，模型用 /model 切换，两者都只影响本会话。',
-    en: 'Switch the workspace with /cd and the model with /model; both apply to this conversation only.',
+    zh: '工作区用 /cd 切换，模型用 /model 切换，Agent 预设用 /agent 切换；都只影响本会话。',
+    en: 'Switch the workspace with /cd, the model with /model, and the agent preset with /agent; each applies to this conversation only.',
   },
   summary: { zh: '本会话状态', en: 'This conversation' },
 }
@@ -864,6 +865,84 @@ export function modelCard(input: {
     ...input.hidden === 0 ? [] : [line(fill(MODEL.more, String(input.hidden)), SIZE.label, '10px 20px 0px 20px', 'grey')],
     ...input.reset === undefined ? [] : [actions([{ label: MODEL.reset, value: input.reset }], true)],
     ...footer(MODEL.foot),
+  ])
+}
+
+/**
+ * Every string the Agent preset picker says.
+ *
+ * The picker exists to answer one question — which composition will the NEXT
+ * session be built from — so the copy says "next message" rather than
+ * "effective immediately": the host refuses to change a preset mid-session,
+ * and a card that implied otherwise would be promising something the runtime
+ * cannot do.
+ */
+const AGENT_PRESET = {
+  title: { zh: 'Agent 预设', en: 'Agent preset' },
+  // The preset's own name goes on the TITLE line, untranslated: a display name
+  // is borrowed text, and copying it into an `i18n` map would claim a
+  // translation this module cannot produce.
+  context: { zh: '下一条消息使用这个预设新开会话', en: 'Your next message starts a session on this preset' },
+  isDefault: { zh: '部署默认', en: 'deployment default' },
+  inUse: { zh: '当前选择', en: 'Chosen now' },
+  broken: { zh: '加载失败，暂时不能切换', en: 'Failed to load — not switchable' },
+  reset: { zh: '回到部署默认', en: 'Use the deployment default' },
+  empty: {
+    zh: '这个部署没有声明任何 Agent 预设，/agent 暂时没有可选的项。',
+    en: 'This deployment declares no agent presets, so there is nothing to choose yet.',
+  },
+  foot: {
+    zh: '切换会开新会话（预设不能中途换）；原会话保留，发 /sessions 可以接回。',
+    en: 'A switch starts a new session (a preset cannot change mid-session); the old one stays reachable through /sessions.',
+  },
+  summary: { zh: 'Agent 预设', en: 'Agent preset' },
+}
+
+/**
+ * The Agent preset picker: what the next session will be composed from, and
+ * what else this deployment declares.
+ * @param input - the current choice, the roster, and each row's payload.
+ * @returns a schema 2.0 card object.
+ */
+export function agentPresetCard(input: {
+  /** Display label of the choice in force (or of the deployment default). */
+  readonly current: string
+  /** Whether the conversation follows the deployment default. */
+  readonly isDefault: boolean
+  readonly entries: readonly {
+    readonly id: string
+    readonly label: string
+    readonly detail?: string | undefined
+    readonly current: boolean
+    /** Why the preset cannot be joined, when it cannot. */
+    readonly broken?: string | undefined
+    readonly value: object
+  }[]
+  readonly reset?: object | undefined
+}): object {
+  return card('info', AGENT_PRESET.summary, [
+    ...heading(
+      'info',
+      // The preset's display name is the title, left exactly as the roster
+      // wrote it — the module's own copy stays untranslated-free of it.
+      input.current,
+      input.isDefault
+        ? join(AGENT_PRESET.context, `（${AGENT_PRESET.isDefault.zh}）`, ` (${AGENT_PRESET.isDefault.en})`)
+        : AGENT_PRESET.context,
+    ),
+    ...input.entries.length === 0 ? [line(AGENT_PRESET.empty, SIZE.body, '12px 20px 0px 20px', 'grey')] : [],
+    // The choice in force is shown but not offered, for the same reason a
+    // model card does it: a control that re-selects what is already true can
+    // only ever be a no-op. A preset that failed to compose is shown too, but
+    // as a statement — pressing a row that is known to refuse would only
+    // produce an error nobody can act on.
+    ...input.entries.map(entry => entry.current
+      ? settledRow(entry.label, entry.detail, AGENT_PRESET.inUse)
+      : entry.broken !== undefined
+        ? settledRow(entry.label, entry.detail, AGENT_PRESET.broken)
+        : optionRow({ label: entry.label, description: entry.detail }, entry.value)),
+    ...input.reset === undefined ? [] : [actions([{ label: AGENT_PRESET.reset, value: input.reset }], true)],
+    ...footer(AGENT_PRESET.foot),
   ])
 }
 
@@ -922,6 +1001,8 @@ export function statusCard(input: {
   readonly version: string
   /** The permission preset in force, as the deployment defines it. */
   readonly preset?: PresetRow | undefined
+  /** The Agent preset the next session will be composed from. */
+  readonly agentPreset?: { readonly label: string; readonly isDefault: boolean } | undefined
   readonly refresh: object
 }): object {
   return card('neutral', STATUS.summary, [
@@ -929,6 +1010,16 @@ export function statusCard(input: {
     panel([
       ...field(STATUS.workspace, input.workspace, input.workspaceIsDefault ? STATUS.isDefault : undefined, true),
       ...field(STATUS.model, input.route, input.routeIsDefault ? STATUS.isDefault : undefined),
+      ...input.agentPreset === undefined
+        ? []
+        // The preset is stated where the model is stated because both answer
+        // "what will my next message run", and a switch that only exists in a
+        // past card is otherwise invisible.
+        : field(
+          STATUS.agentPreset,
+          input.agentPreset.label,
+          input.agentPreset.isDefault ? STATUS.isDefault : undefined,
+        ),
       ...field(STATUS.activity, STATUS[input.activity]),
       ...input.preset === undefined
         ? []
@@ -1131,6 +1222,13 @@ export const TOAST = {
   modelUnchanged: { zh: '本会话已经在用这个模型', en: 'This conversation already uses that model' },
   modelReset: { zh: '已回到默认模型', en: 'Back to the default model' },
   modelUnreadable: { zh: '这个路由无法解析', en: 'That route could not be read' },
+  agentSwitched: {
+    zh: '已切换 Agent 预设，下一条消息从新会话开始',
+    en: 'Agent preset switched — your next message starts a new session',
+  },
+  agentUnchanged: { zh: '本会话已经在用这个预设', en: 'This conversation already uses that preset' },
+  agentReset: { zh: '已回到默认 Agent 预设', en: 'Back to the default agent preset' },
+  agentGone: { zh: '这个 Agent 预设已经不在列表里了', en: 'That agent preset is no longer on offer' },
   refreshed: { zh: '已刷新', en: 'Refreshed' },
   notYours: { zh: '你无权修改本会话', en: 'You are not allowed to change this conversation' },
   presetSwitching: { zh: '正在切换…', en: 'Switching…' },

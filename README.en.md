@@ -50,6 +50,7 @@ Look around:
 /ws
 /cd my-project
 /model
+/agent
 ```
 
 Then give it something to do:
@@ -68,6 +69,7 @@ The work shows up in Feishu as it happens, and anything needing you arrives as a
 | Continue a session | `/sessions` lists what this conversation may continue in its workspace — its own history, plus sessions opened in the web UI or CLI — and one press switches to it; `/cd` and `/new` return it to the derived session |
 | Workspaces | `/ws` lists, `/cd` switches; returning to one resumes the work you left there |
 | Model switching | `/model` opens a picker; the session and its context carry over, and the default is one press away |
+| Agent preset switching | `/agent` opens a picker for the built-in and custom agent presets; a preset cannot change mid-session, so a switch starts a new session (the old one stays reachable through `/sessions`) |
 | Native run view | Reasoning, tool calls, and results as a thinking process, with the answer sent on its own |
 | Cards that ask | Single or multiple choice, or type an answer; approve a plan or send feedback; allow or refuse a tool call |
 | Permission presets | `/permission` opens a picker saying what each preset may touch and whether it still asks; loosening the sandbox needs an approver, tightening it does not |
@@ -88,6 +90,9 @@ The work shows up in Feishu as it happens, and anything needing you arrives as a
 | `/model` | Open the model picker |
 | `/model use <provider/model>` | Switch without opening a card |
 | `/model reset` | Back to the deployment default |
+| `/agent` | Open the agent-preset picker |
+| `/agent <preset id>` | Switch preset; your next message starts a new session |
+| `/agent reset` | Back to the deployment's default agent preset |
 | `/permission` | Open the permission-preset picker |
 | `/permission <preset>` | Switch preset without opening a card |
 | `/new` | Start a fresh session in place; workspace and model stay |
@@ -150,6 +155,7 @@ dsh web
 - The app's visibility scope decides who can reach the bot at all; `senderAllowlist`, `groupAllowlist`, and `approvers` narrow it further.
 - `workspaceRoots` fences the directories a chat may switch into.
 - `sessionScope` is `chat`, `chat-thread`, or `chat-sender`.
+- `preset` names the deployment's default agent preset (meaningful only where the host composes an `agentPresets` roster); a conversation's `/agent` choice outranks it and persists. A preset decides the agent's tools and prompt sections, and the host only allows it to be chosen before the session's first turn — so `/agent` always starts a new session, with the old one still reachable through `/sessions`. Resuming a stored session joins the preset its log records, never today's configured default.
 - `instance` names an extra bot row; the first stays unnamed, which keeps its settings and sessions exactly where they are.
 - `botPeers` restricts which bots are answered; `botHops` bounds consecutive bot turns (six).
 - A card that changes state is bound to the chat it was sent to: forwarded elsewhere, it governs nothing.
@@ -163,7 +169,7 @@ dsh web
 - The single-file ceiling defaults to 20 MiB, set separately for each direction with `maxReceiveFileBytes` and `maxSendFileBytes`; documents (pdf / xlsx / docx) only ever arrive as a download with no online preview, because the upstream SDK uploads every general file as the `stream` type instead of inferring one from the extension.
 - Voice messages land on disk like any other file; nothing transcribes them.
 - Configuration IS the `config` of this plugin's row in the profile patch (`~/.dsh/profiles/<profile>/cordis.patch.yml`), which is also what Settings → Plugins edits; the host hot-reloads the row, so no manual restart is needed.
-- A conversation's own state (the `/cd` workspace, the `/model` route, the `/new` epoch, the `/session` pick) is not configuration: it lives in the host's `storageDomain`. A deployment that composes no storage still runs — such switches simply last for the process, and each command says so in its reply.
+- A conversation's own state (the `/cd` workspace, the `/model` route, the `/agent` preset, the `/new` epoch, the `/session` pick) is not configuration: it lives in the host's `storageDomain`. A deployment that composes no storage still runs — such switches simply last for the process, and each command says so in its reply.
 
 </details>
 

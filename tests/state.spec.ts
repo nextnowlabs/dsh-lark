@@ -65,7 +65,7 @@ describe('opening the store', () => {
     const domain = memoryDomain()
     const store = await openStateStore({ open: async () => domain.service }, 'lark_channel', () => {})
     expect(store.snapshot()).toEqual({
-      chatWorkspaces: {}, chatModels: {}, chatEpochs: {}, chatSessions: {},
+      chatWorkspaces: {}, chatModels: {}, chatEpochs: {}, chatSessions: {}, chatPresets: {},
     })
 
     expect(await store.apply({ chatWorkspaces: { oc_1: '/tmp/a' } })).toBe(true)

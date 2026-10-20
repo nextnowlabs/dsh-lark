@@ -95,6 +95,13 @@ export interface Config {
    * Seed-only, like {@link chatWorkspaces}.
    */
   chatSessions?: Record<string, string>
+  /**
+   * Managed state, not configuration: the Agent preset each conversation
+   * chose with `/agent`, keyed by conversation key. An absent entry — or the
+   * empty-string marker — means the deployment default in {@link preset}.
+   * Seed-only, like {@link chatWorkspaces}.
+   */
+  chatPresets?: Record<string, string>
   /** Provider route override for chat agents; defaults to the host `agentDefaultModel` selection. */
   provider?: string
   /** Model id override for chat agents; defaults to the host `agentDefaultModel` selection. */
@@ -104,6 +111,10 @@ export interface Config {
    * Absent joins the roster default. A deployment WITH a roster keeps every
    * model-facing row on the agent plane, so joining nothing would reach the
    * model with no tools at all.
+   *
+   * This is the DEPLOYMENT default only: a conversation that picked another
+   * preset with `/agent` keeps its own choice, and every new session it
+   * derives — `/new`, `/cd`, or a preset switch — starts under it.
    */
   preset?: string
   /**
@@ -276,6 +287,7 @@ export interface ResolvedConfig {
   chatModels: Record<string, string>
   chatEpochs: Record<string, string>
   chatSessions: Record<string, string>
+  chatPresets: Record<string, string>
   provider?: string | undefined
   model?: string | undefined
   preset?: string | undefined
@@ -317,6 +329,7 @@ export const Config: z<Config> = z.object({
   chatModels: z.dict(String).default({}),
   chatEpochs: z.dict(String).default({}),
   chatSessions: z.dict(String).default({}),
+  chatPresets: z.dict(String).default({}),
   provider: z.string(),
   model: z.string(),
   preset: z.string(),
@@ -352,6 +365,7 @@ export function resolveConfig(config: Config): ResolvedConfig {
     chatModels: config.chatModels ?? {},
     chatEpochs: config.chatEpochs ?? {},
     chatSessions: config.chatSessions ?? {},
+    chatPresets: config.chatPresets ?? {},
     sessionScope: config.sessionScope ?? 'chat',
     output: config.output ?? 'cot',
     showProcess: config.showProcess ?? true,

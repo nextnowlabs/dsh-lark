@@ -34,6 +34,7 @@ import type {
   HostAgent,
   HostAgentHandle,
   HostAgentOptions,
+  HostAgentPreset,
   HostAgentPresets,
   HostAttachments,
   HostAgentRegistry,
@@ -92,6 +93,16 @@ import {
   runModelCommand,
 } from './model.ts'
 import type { CatalogEntry, ModelActionValue } from './model.ts'
+import {
+  AGENT_COMMAND,
+  agentActionValue,
+  agentPresetPicker,
+  ChatPresets,
+  choiceLabel,
+  runAgentCommand,
+  switchAgentPreset,
+} from './agent-preset.ts'
+import type { AgentActionValue, AgentChoice } from './agent-preset.ts'
 import { readMeters, renderStatusCard, STATUS_COMMAND, statusActionValue } from './status.ts'
 import type { StatusFields } from './status.ts'
 import { ChatQuestions, QUESTION_TIMEOUT_MS, questionActionValue, shadowQuestionTool } from './questions.ts'
@@ -819,6 +830,17 @@ export function installBridge(
   })
 
   /**
+   * Which Agent preset each conversation starts its sessions under, against
+   * the deployment default in `config.preset`. A preset cannot be swapped on a
+   * running session, so a choice here is a NEXT-session fact.
+   */
+  const chatPresets = new ChatPresets({
+    entries: config.chatPresets,
+    persist: persistState,
+    report: notify,
+  })
+
+  /**
    * Which session each conversation was told to continue, when it was told at
    * all. A pick overrides the derivation; `/cd` and `/new` clear it, because
    * both of them ARE a change of session and a pick that survived them would
@@ -840,6 +862,13 @@ export function installBridge(
   const pathBySession = new Map<string, string>()
   const routeBySession = new Map<string, HostAgentOptions>()
   /**
+   * The conversation each session id was derived for. Composition reads it to
+   * find the conversation's Agent preset: the ladder is keyed by session id
+   * alone, and a create's preset comes from the conversation, which only this
+   * map connects back.
+   */
+  const keyBySession = new Map<string, string>()
+  /**
    * The session one conversation is on: its pick, or what it derives to.
    *
    * The one answer to that question, because every caller that answered it
@@ -855,10 +884,88 @@ export function installBridge(
   const sessionIdForKey = (key: string): string => {
     const id = sessionIdOf(key)
     pathBySession.set(id, chatWorkspaces.pathFor(key))
+    keyBySession.set(id, key)
     const route = chatModels.routeFor(key)
     if (route === undefined) routeBySession.delete(id)
     else routeBySession.set(id, route)
     return id
+  }
+
+  /**
+   * The Agent preset one conversation's next session starts under: its own
+   * `/agent` choice, or the deployment default in `config.preset`.
+   * @param key - the conversation key, when the derivation knows it.
+   * @returns the preset id, or undefined to join the roster default.
+   */
+  const conversationPreset = (key: string | undefined): string | undefined =>
+    (key === undefined ? undefined : chatPresets.presetFor(key)) ?? config.preset
+
+  /**
+   * Every preset the deployment's roster declares, in its own order.
+   *
+   * A missing `list()` (an older registry), a missing roster, or a throwing
+   * read degrades to an empty catalog: `/agent` then states there is nothing
+   * to choose rather than failing a discovery surface.
+   * @returns the roster, or an empty list.
+   */
+  const agentCatalog = async (): Promise<readonly AgentChoice[]> => {
+    const presets = ctx.get('agentPresets') as HostAgentPresets | undefined
+    if (presets?.list === undefined) return []
+    try {
+      return (await presets.list()).map(preset => ({
+        id: preset.id,
+        ...preset.name === undefined ? {} : { name: preset.name },
+        ...preset.description === undefined ? {} : { description: preset.description },
+        ...preset.broken === undefined ? {} : { broken: preset.broken },
+      }))
+    } catch (error) {
+      notify(`lark-channel: reading the Agent preset roster failed: ${failureDetail(error)}`)
+      return []
+    }
+  }
+
+  /**
+   * The deployment default's display label, resolved without an agent.
+   *
+   * The configured id is preferred; with none, the roster's own default is
+   * asked for by resolving "no id". A deployment that composes no roster has
+   * no default to name, and the label says so instead of inventing one.
+   * @returns the label for a card or a reply.
+   */
+  const defaultAgentLabel = async (): Promise<string> => {
+    const catalog = await agentCatalog()
+    const named = (id: string): string => {
+      const choice = catalog.find(candidate => candidate.id === id)
+      return choice === undefined ? id : choiceLabel(choice)
+    }
+    if (config.preset !== undefined) return named(config.preset)
+    const presets = ctx.get('agentPresets') as HostAgentPresets | undefined
+    if (presets !== undefined) {
+      try {
+        return named((await presets.resolve(undefined)).id)
+      } catch {
+        // No roster default to name; fall through to the plain word.
+      }
+    }
+    return '默认'
+  }
+
+  /**
+   * What the next session starts under, for `/status`: the conversation's
+   * choice or the deployment default, and whether it is the latter. Absent
+   * entirely when the deployment composes no roster — a preset row would then
+   * describe something that never applies.
+   * @param key - the conversation key.
+   * @returns the status row, when this deployment has presets at all.
+   */
+  const agentPresetStatus = async (
+    key: string,
+  ): Promise<{ readonly label: string; readonly isDefault: boolean } | undefined> => {
+    if ((ctx.get('agentPresets') as HostAgentPresets | undefined) === undefined) return undefined
+    const chosen = chatPresets.presetFor(key)
+    if (chosen === undefined) return { label: await defaultAgentLabel(), isDefault: true }
+    const choice = (await agentCatalog()).find(candidate => candidate.id === chosen)
+    return { label: choice === undefined ? chosen : choiceLabel(choice), isDefault: false }
   }
 
   /**
@@ -1055,29 +1162,78 @@ export function installBridge(
   }
 
   /**
-   * Resolve what one agent joins, and the view its calls are described through.
+   * Resolve one preset id, refusing one that cannot compose.
+   *
+   * Resolving a preset SUCCEEDS even when its rows failed to activate, and the
+   * failure rides along as metadata, so a broken roster would otherwise reach
+   * the chat as an opaque refusal from `mount` a rung later, naming nothing.
+   * @param presets - the roster.
+   * @param wanted - an explicit preset id, or undefined for the roster default.
+   * @returns the resolved preset.
+   * @throws when the roster supplies no such preset, or one that cannot be composed.
+   */
+  const resolvePreset = async (
+    presets: HostAgentPresets,
+    wanted?: string,
+  ): Promise<HostAgentPreset> => {
+    const preset = await presets.resolve(wanted)
+    if (preset.broken !== undefined) {
+      throw new Error(`agent preset "${preset.id}" could not be composed: ${preset.broken}`)
+    }
+    return preset
+  }
+
+  /**
+   * The preset a stored session records, read from the projections the host
+   * folds over its log.
+   *
+   * A resume must join the composition the session was WRITTEN under, not
+   * today's config default: the preset decides the tool schemas and prompt
+   * sections the history was produced with. Undefined — no projection registry,
+   * an older session, a deployment without a roster — falls back to the config
+   * default, which is exactly what this channel did before a roster could vary
+   * per conversation.
+   * @param agent - the agent being resumed.
+   * @returns the recorded preset id, if the log carries one.
+   */
+  const recordedPreset = (agent: HostAgent): string | undefined => {
+    try {
+      const value = (ctx.get('sessionProjections') as HostSessionProjections | undefined)
+        ?.snapshot(agent.session).values.agentPreset
+      return typeof value === 'string' && value !== '' ? value : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Compose the world of one of this channel's agents: the preset it joins and
+   * the rows this channel adds to it.
+   *
    * A deployment with a preset roster keeps every model-facing row on the agent
    * plane, so an agent that joins nothing reaches the model with NO tools and
-   * none of the deployment's prompt sections. The id is resolved up front to
-   * record it, and the join happens inside setup so a broken preset rolls the
-   * whole creation back instead of publishing a toolless session.
+   * none of the deployment's prompt sections.
+   * @param mode - `create` resolves the conversation's preset up front and
+   *   records it on the session; `resume` reads the preset the stored log
+   *   records, because that is the composition its history was produced under.
+   * @param key - the conversation a create is for, when the derivation knows it.
    * @returns the composition every rung of one session's ladder applies.
-   * @throws when the roster supplies no such preset, or resolved one that
-   * could not be composed.
+   * @throws when the roster supplies no such preset, or one that cannot be composed.
    */
-  const composeAgent = async (): Promise<AgentComposition> => {
+  const composeAgent = async (
+    mode: 'create' | 'resume',
+    key?: string,
+  ): Promise<AgentComposition> => {
     // Loader siblings mount concurrently; await the complete application so a
     // first message arriving during boot never sees a half-composed agent world.
     await (ctx.get('loader') as HostLoader | undefined)?.await()
     const presets = ctx.get('agentPresets') as HostAgentPresets | undefined
-    const preset = presets === undefined ? undefined : await presets.resolve(config.preset)
-    // Resolving a preset now SUCCEEDS for one that failed to compose and
-    // carries the failure as metadata, so a broken roster would otherwise
-    // reach the chat as an opaque refusal from `mount` a rung later, naming
-    // nothing. Refused here instead, in the roster's own words.
-    if (preset?.broken !== undefined) {
-      throw new Error(`agent preset "${preset.id}" could not be composed: ${preset.broken}`)
-    }
+    // A create knows the conversation it serves and resolves its choice now, so
+    // `meta` can record the joined preset. A resume cannot: the answer is in
+    // the log, which only exists once the host has loaded the session.
+    const createPreset = presets === undefined || mode === 'resume'
+      ? undefined
+      : await resolvePreset(presets, conversationPreset(key))
     // The scope a call is described in is THE AGENT — what the host's own
     // presenters pass, and a superset of the roster's standing scope, which is
     // only the agent scope's parent. No agent exists when a composition is
@@ -1086,33 +1242,55 @@ export function installBridge(
     // global layer, which is what it did before a roster was composed at all.
     let composed: HostAgent | undefined
     return {
-      ...preset === undefined ? {} : { presetId: preset.id },
+      ...createPreset === undefined ? {} : { presetId: createPreset.id },
       presentCall: createCallPresenter(ctx.get('tools') as HostTools | undefined, () => composed),
       setup: async (agentCtx: Context, agent: HostAgent) => {
         composed = agent
-        if (presets !== undefined && preset !== undefined) await presets.mount(agentCtx, preset.id)
+        if (presets !== undefined) {
+          const preset = mode === 'resume'
+            ? await resolvePreset(presets, recordedPreset(agent) ?? config.preset)
+            : createPreset
+          if (preset !== undefined) await presets.mount(agentCtx, preset.id)
+        }
         composeChatAgent(agentCtx, config, askQuestions, planReview, sendFilePorts, botSelf())
       },
     }
   }
 
   /**
-   * One composition per session id, shared by the resume attempt, the create
-   * that follows it, and the renderer that describes the session's calls.
-   * Resolving a preset re-reads the roster, and a first-contact chat walks every
-   * rung, so an uncached ladder would read the roster once per rung.
+   * One composition per session id, shared by the rung that built the agent
+   * and the renderer that describes the session's calls. Resolving a preset
+   * re-reads the roster, and a first-contact chat walks every rung, so an
+   * uncached ladder would read the roster once per rung.
+   *
+   * The mode is part of the entry because a failed resume is followed by
+   * create on the SAME id: a resume composition resolves the preset from the
+   * log that turned out not to exist, while a create must resolve the
+   * conversation's choice. Reusing the former would publish a session whose
+   * `meta` names nothing while the setup mounted something.
    */
-  const compositions = new Map<string, Promise<AgentComposition>>()
-  const compositionFor = (sessionId: string): Promise<AgentComposition> => {
-    let pending = compositions.get(sessionId)
-    if (pending === undefined) {
-      pending = composeAgent()
-      compositions.set(sessionId, pending)
-      // A rejected composition is not replayed: the next message may arrive
-      // after the roster it named was fixed.
-      pending.catch(() => { compositions.delete(sessionId) })
+  interface CachedComposition {
+    readonly mode: 'create' | 'resume'
+    readonly pending: Promise<AgentComposition>
+  }
+  const compositions = new Map<string, CachedComposition>()
+  const compositionFor = (
+    sessionId: string,
+    mode: 'create' | 'resume' = 'resume',
+  ): Promise<AgentComposition> => {
+    const cached = compositions.get(sessionId)
+    if (cached !== undefined && cached.mode === mode) return cached.pending
+    const entry: CachedComposition = {
+      mode,
+      pending: composeAgent(mode, mode === 'create' ? keyBySession.get(sessionId) : undefined),
     }
-    return pending
+    compositions.set(sessionId, entry)
+    // A rejected composition is not replayed: the next message may arrive
+    // after the roster it named was fixed.
+    entry.pending.catch(() => {
+      if (compositions.get(sessionId) === entry) compositions.delete(sessionId)
+    })
+    return entry.pending
   }
 
   const agents = ctx.agents as DurableAgentRegistry
@@ -1124,7 +1302,11 @@ export function installBridge(
       return agent === undefined ? undefined : { agent, dispose: () => Promise.resolve() }
     },
     resume: async (sessionId) => {
-      const composition = await compositionFor(sessionId)
+      // The stored log owns the preset: this composition joins whatever it
+      // records, not the conversation's current choice. That is what lets
+      // `/sessions` carry on a session started under another preset — or on
+      // another surface — without rewriting its model-visible world.
+      const composition = await compositionFor(sessionId, 'resume')
       const handle = await agents.resume({
         resumeSessionId: sessionId,
         agentOptions: routeBySession.get(sessionId) ?? modelSelection(),
@@ -1151,7 +1333,7 @@ export function installBridge(
         notify(`lark-channel: ${sessionId} could not be resumed; retired the pick held by ${picking.join(', ')}`)
         throw new Error('这个会话打不开了（日志可能已损坏或版本不兼容），已回到本聊天自己的会话。再发一条消息即可继续。')
       }
-      const composition = await compositionFor(sessionId)
+      const composition = await compositionFor(sessionId, 'create')
       // The workspace's own canonical path, so `attachSession` finds the header
       // cwd it validates against rather than an uncanonicalized variant of it.
       const directory = pathBySession.get(sessionId) ?? defaultCwd
@@ -1207,7 +1389,10 @@ export function installBridge(
     let pending = bindings.get(sessionId)
     if (pending === undefined) {
       pending = (async (): Promise<ChatBinding> => {
-        const { presentCall } = await compositionFor(sessionId)
+        // Whatever rule built the agent — create, resume, or nothing (an
+        // adopted live agent) — the renderer needs that composition's
+        // presenter, so a cached one is taken as-is rather than re-derived.
+        const { presentCall } = await (compositions.get(sessionId)?.pending ?? compositionFor(sessionId))
         // The renderer is the composition's last reader; dropping it here leaves
         // the next conversation bound on this id to read the roster fresh.
         compositions.delete(sessionId)
@@ -1283,6 +1468,7 @@ export function installBridge(
       { name: WS_COMMAND, description: '查看可用工作区' },
       { name: GET_COMMAND, description: '把工作区里的文件发到聊天' },
       { name: MODEL_COMMAND, description: '查看或切换本会话模型' },
+      { name: AGENT_COMMAND, description: '查看或切换本会话的 Agent 预设（切换会开新会话）' },
       { name: STATUS_COMMAND, description: '查看本会话状态' },
       { name: NEW_COMMAND, description: '开一个新会话，清空上下文' },
       { name: SESSIONS_COMMAND, description: '列出可接续的会话，点一行就切过去' },
@@ -1404,6 +1590,31 @@ export function installBridge(
       aimBySession.delete(releasedId)
       questions.cancelSession(releasedId)
     }
+  }
+
+  /**
+   * Retire one conversation's current session so the next message derives a
+   * fresh one, and report whether the new id will survive a restart.
+   *
+   * An Agent preset cannot be swapped on a running session, so this is what a
+   * `/agent` switch does instead of a resume: `/new`, `/cd` and a model change
+   * all leave the server's session in place, but a preset change is a change of
+   * the composition itself. The pick is retired first — a picked session is
+   * one this conversation was told to CONTINUE, and continuing it would skip
+   * exactly the new session the switch is asking for.
+   * @param key - the conversation key.
+   * @param release - its current agent's release hook, captured BEFORE the
+   *   mappings move so it disposes the old session rather than a new one.
+   * @returns whether the new session id is durable.
+   */
+  const restartConversation = async (
+    key: string,
+    release: () => Promise<void>,
+  ): Promise<boolean> => {
+    await chatSessionPicks.set(key, undefined)
+    const result = await chatEpochs.startNew(chatWorkspaces.baseSessionIdFor(key))
+    await release()
+    return result.durable
   }
 
   /** Everything `/status` reports, read fresh from channel state. */
@@ -1653,7 +1864,8 @@ export function installBridge(
     const channelCommand = commandName(msg.content)
     if (
       channelCommand === CD_COMMAND || channelCommand === WS_COMMAND
-      || channelCommand === MODEL_COMMAND || channelCommand === STATUS_COMMAND
+      || channelCommand === MODEL_COMMAND || channelCommand === AGENT_COMMAND
+      || channelCommand === STATUS_COMMAND
       || channelCommand === NEW_COMMAND || channelCommand === GET_COMMAND
       || channelCommand === SESSIONS_COMMAND
     ) {
@@ -1717,10 +1929,21 @@ export function installBridge(
             deploymentRoute,
             release,
           })
+        } else if (channelCommand === AGENT_COMMAND) {
+          reply = await runAgentCommand(msg.content, subject, chatPresets, {
+            catalog: agentCatalog,
+            defaultLabel: defaultAgentLabel,
+            restart: () => restartConversation(key, release),
+          })
         } else if (channelCommand === SESSIONS_COMMAND) {
           reply = { card: await sessionPicker(subject, msg.content) }
         } else {
-          reply = { card: renderStatusCard({ ...statusFieldsFor(subject), ...presetOf(subject) }, subject) }
+          reply = {
+            card: renderStatusCard(
+              { ...statusFieldsFor(subject), ...presetOf(subject), agentPreset: await agentPresetStatus(subject.key) },
+              subject,
+            ),
+          }
         }
         await port.send(msg.chatId, reply).catch(reportSendFailure)
       } catch (error) {
@@ -2208,6 +2431,8 @@ export function installBridge(
     }
     const pick = modelActionValue(evt.action.value)
     if (pick !== undefined) return switchModel(pick, evt)
+    const agent = agentActionValue(evt.action.value)
+    if (agent !== undefined) return switchAgentFromCard(agent, evt)
     const preset = permissionActionValue(evt.action.value)
     if (preset !== undefined) return switchPresetFromCard(preset, evt)
     const session = sessionActionValue(evt.action.value)
@@ -2223,7 +2448,14 @@ export function installBridge(
         toast: toast('success', TOAST.refreshed),
         card: {
           type: 'raw',
-          data: renderStatusCard({ ...statusFieldsFor(refresh), ...presetOf(refresh) }, refresh),
+          data: renderStatusCard(
+            {
+              ...statusFieldsFor(refresh),
+              ...presetOf(refresh),
+              agentPreset: await agentPresetStatus(refresh.key),
+            },
+            refresh,
+          ),
         },
       }
     }
@@ -2723,6 +2955,68 @@ export function installBridge(
       toast: toast(
         result.changed ? 'success' : 'info',
         !result.changed ? TOAST.modelUnchanged : route === undefined ? TOAST.modelReset : TOAST.modelSwitched,
+      ),
+      card: { type: 'raw', data: painted },
+    }
+  }
+
+  /**
+   * Apply one Agent preset pick and hand back the repainted picker.
+   *
+   * The same steps the typed `/agent <id>` runs — record the choice, retire the
+   * session so the next message derives a fresh one — because a click and a
+   * typed line must not leave the conversation in two different states. Unlike
+   * a model switch this cannot resume the same session: the host refuses a
+   * preset change once a turn has run, and the history belongs to the old
+   * composition.
+   * @param pick - the payload the pressed row carried.
+   * @param evt - the click, for authorization and the operator log.
+   * @returns the toast and the card to paint over the pressed one.
+   */
+  const switchAgentFromCard = async (
+    pick: AgentActionValue,
+    evt: CardActionEvent,
+  ): Promise<CardActionResponse> => {
+    const refusal = refuseControlClick(pick, evt)
+    if (refusal !== undefined) {
+      notify(`lark-channel: rejected an Agent preset switch: ${refusal}`)
+      return { toast: toast('error', TOAST.notYours) }
+    }
+    const catalog = await agentCatalog()
+    // A row is re-checked against the roster as it stands now: a card outlives
+    // the state it was drawn from, and a preset removed since then must not be
+    // resurrected by a stale press.
+    const chosen = pick.preset === undefined
+      ? undefined
+      : catalog.find(choice => choice.id === pick.preset)
+    if (pick.preset !== undefined && chosen === undefined) {
+      notify(`lark-channel: an Agent preset card carried ${pick.preset}, which the roster no longer offers`)
+      return {
+        toast: toast('info', TOAST.agentGone),
+        card: {
+          type: 'raw',
+          data: agentPresetPicker(pick, catalog, chatPresets.presetFor(pick.key), await defaultAgentLabel()),
+        },
+      }
+    }
+    const release = releaseFor(pick.key)
+    const outcome = await switchAgentPreset(chatPresets, pick.key, chosen?.id, () => restartConversation(pick.key, release))
+    if (outcome.changed) {
+      notify(
+        `lark-channel: ${pick.key} starts its sessions under `
+        + `${chosen?.id ?? 'the deployment default'} from ${chatWorkspaces.baseSessionIdFor(pick.key)}`,
+      )
+    }
+    const painted = agentPresetPicker(
+      pick,
+      catalog,
+      chatPresets.presetFor(pick.key),
+      await defaultAgentLabel(),
+    )
+    return {
+      toast: toast(
+        outcome.changed ? 'success' : 'info',
+        !outcome.changed ? TOAST.agentUnchanged : pick.preset === undefined ? TOAST.agentReset : TOAST.agentSwitched,
       ),
       card: { type: 'raw', data: painted },
     }

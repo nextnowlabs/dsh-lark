@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  agentPresetCard,
   approvalCard,
   fileApprovalCard,
   modelCard,
@@ -367,11 +368,21 @@ describe('localization', () => {
       hidden: 2,
       reset: {},
     }),
+    agentPresetCard({
+      current: 'Standard mode',
+      isDefault: true,
+      entries: [
+        { id: 'standard', label: 'Standard mode', current: true, value: {} },
+        { id: 'reviewer', label: 'Reviewer', detail: 'Reviews changes', current: false, value: {} },
+        { id: 'broken', label: 'Broken one', current: false, broken: 'its row failed', value: {} },
+      ],
+    }),
     statusCard({
       workspace: '/w',
       workspaceIsDefault: true,
       route: 'p/m',
       routeIsDefault: false,
+      agentPreset: { label: 'Standard mode', isDefault: true },
       sessionId: 's',
       activity: 'running',
       pendingApprovals: 2,
